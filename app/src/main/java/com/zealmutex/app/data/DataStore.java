@@ -15,8 +15,10 @@ import java.time.ZoneId;
 import java.time.temporal.TemporalAdjusters;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Single-process repository for rules, daily counters and weekly reports.
@@ -64,17 +66,33 @@ public final class DataStore {
         rollover(nowMillis);
         List<Rule> result = new ArrayList<>();
         JSONObject active = object("activeRules");
+        JSONArray order = array("ruleOrder");
+        Set<String> added = new HashSet<>();
+        for (int i = 0; i < order.length(); i++) {
+            String packageName = order.optString(i);
+            Rule rule = parseRule(active.optJSONObject(packageName));
+            if (rule != null) {
+                result.add(rule);
+                added.add(packageName);
+            }
+        }
+        boolean repairedOrder = false;
         Iterator<String> keys = active.keys();
         while (keys.hasNext()) {
             String key = keys.next();
-            try {
-                result.add(Rule.fromJson(active.getJSONObject(key)));
-            } catch (JSONException ignored) {
-                // A single corrupt rule must not disable every other rule.
+            if (added.contains(key)) {
+                continue;
+            }
+            Rule rule = parseRule(active.optJSONObject(key));
+            if (rule != null) {
+                result.add(rule);
+                order.put(key);
+                repairedOrder = true;
             }
         }
-        Collections.sort(result, (left, right) ->
-                left.appLabel.compareToIgnoreCase(right.appLabel));
+        if (repairedOrder) {
+            persistNow();
+        }
         return result;
     }
 
@@ -103,6 +121,7 @@ public final class DataStore {
             JSONObject active = object("activeRules");
             if (!active.has(rule.packageName)) {
                 active.put(rule.packageName, rule.toJson());
+                appendRuleOrder(rule.packageName);
                 persistNow();
                 return true;
             }
@@ -110,6 +129,7 @@ public final class DataStore {
             Rule activeRule = parseRule(active.optJSONObject(rule.packageName));
             if (activeRule == null) {
                 active.put(rule.packageName, rule.toJson());
+                appendRuleOrder(rule.packageName);
                 persistNow();
                 return true;
             }
@@ -194,17 +214,32 @@ public final class DataStore {
         }
     }
 
-    public synchronized void addUsage(Rule rule, long deltaMs, long nowMillis) {
-        if (deltaMs <= 0L || deltaMs > 10_000L) {
+    public synchronized void addUsageInterval(
+            Rule rule, long startMillis, long endMillis) {
+        long totalMs = endMillis - startMillis;
+        if (totalMs <= 0L || totalMs > 60_000L) {
             return;
         }
-        rollover(nowMillis);
-        JSONObject stats = todayApp(rule.packageName, rule.appLabel, rule, nowMillis);
-        try {
-            stats.put("usedMs", stats.optLong("usedMs", 0L) + deltaMs);
-            persistLazily();
-        } catch (JSONException ignored) {
+        long cursor = startMillis;
+        while (cursor < endMillis) {
+            ZoneId zone = ZoneId.systemDefault();
+            long nextMidnight = Instant.ofEpochMilli(cursor)
+                    .atZone(zone)
+                    .toLocalDate()
+                    .plusDays(1)
+                    .atStartOfDay(zone)
+                    .toInstant()
+                    .toEpochMilli();
+            long partEnd = Math.min(endMillis, nextMidnight);
+            rollover(cursor);
+            JSONObject stats = todayApp(rule.packageName, rule.appLabel, rule, cursor);
+            try {
+                stats.put("usedMs", stats.optLong("usedMs", 0L) + partEnd - cursor);
+            } catch (JSONException ignored) {
+            }
+            cursor = partEnd;
         }
+        persistLazily();
     }
 
     public synchronized int getTodayTemporaryUnlockCount(String packageName, long nowMillis) {
@@ -213,16 +248,30 @@ public final class DataStore {
                 .optInt("temporaryUnlockCount", 0);
     }
 
-    public synchronized int incrementTemporaryUnlockCount(Rule rule, long nowMillis) {
+    public synchronized boolean startTemporaryUnlock(Rule rule, long nowMillis) {
         rollover(nowMillis);
         JSONObject stats = todayApp(rule.packageName, rule.appLabel, rule, nowMillis);
-        int next = stats.optInt("temporaryUnlockCount", 0) + 1;
-        try {
-            stats.put("temporaryUnlockCount", next);
-            persistNow();
-        } catch (JSONException ignored) {
+        int used = stats.optInt("temporaryUnlockCount", 0);
+        if (rule.temporaryUnlocksPerDay == 0 || used >= rule.temporaryUnlocksPerDay) {
+            return false;
         }
-        return next;
+        try {
+            stats.put("temporaryUnlockCount", used + 1);
+            stats.put("temporaryUnlockUntil",
+                    nowMillis + rule.temporaryUnlockMinutes * 60_000L);
+            persistNow();
+            return true;
+        } catch (JSONException ignored) {
+            return false;
+        }
+    }
+
+    public synchronized long getTemporaryUnlockRemainingMs(
+            String packageName, long nowMillis) {
+        rollover(nowMillis);
+        long until = todayApp(packageName, "", null, nowMillis)
+                .optLong("temporaryUnlockUntil", 0L);
+        return Math.max(0L, until - nowMillis);
     }
 
     public synchronized boolean hasReminderFired(
@@ -334,6 +383,7 @@ public final class DataStore {
             }
             if (change.optBoolean("delete", false)) {
                 active.remove(packageName);
+                removeRuleOrder(packageName);
             } else {
                 JSONObject rule = change.optJSONObject("rule");
                 if (rule != null) {
@@ -496,6 +546,7 @@ public final class DataStore {
                 stats.put("label", label.isEmpty() ? packageName : label);
                 stats.put("usedMs", 0L);
                 stats.put("temporaryUnlockCount", 0);
+                stats.put("temporaryUnlockUntil", 0L);
                 stats.put("firedReminders", new JSONArray());
                 stats.put("mode", rule == null ? Rule.MODE_DAILY_LIMIT : rule.mode);
                 stats.put("limitMinutes", rule == null ? 0 : rule.dailyLimitMinutes);
@@ -560,6 +611,36 @@ public final class DataStore {
         if (root.optJSONArray("reports") == null) {
             put("reports", new JSONArray());
         }
+        if (root.optJSONArray("ruleOrder") == null) {
+            JSONArray order = new JSONArray();
+            Iterator<String> keys = object("activeRules").keys();
+            while (keys.hasNext()) {
+                order.put(keys.next());
+            }
+            put("ruleOrder", order);
+        }
+    }
+
+    private void appendRuleOrder(String packageName) {
+        JSONArray order = array("ruleOrder");
+        for (int i = 0; i < order.length(); i++) {
+            if (packageName.equals(order.optString(i))) {
+                return;
+            }
+        }
+        order.put(packageName);
+    }
+
+    private void removeRuleOrder(String packageName) {
+        JSONArray order = array("ruleOrder");
+        JSONArray kept = new JSONArray();
+        for (int i = 0; i < order.length(); i++) {
+            String current = order.optString(i);
+            if (!packageName.equals(current)) {
+                kept.put(current);
+            }
+        }
+        put("ruleOrder", kept);
     }
 
     private JSONObject object(String key) {
