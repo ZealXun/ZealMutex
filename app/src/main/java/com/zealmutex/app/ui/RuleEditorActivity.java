@@ -12,6 +12,7 @@ import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.ImageView;
+import android.widget.ImageButton;
 import android.widget.LinearLayout;
 import android.widget.NumberPicker;
 import android.widget.RadioButton;
@@ -100,6 +101,34 @@ public final class RuleEditorActivity extends Activity {
         labels.addView(Ui.text(this, rule.packageName, 11f, Ui.MUTED), Ui.matchWrap(this, 4));
         header.addView(labels, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        if (existingRule) {
+            boolean scheduledDelete = store.hasScheduledDelete(
+                    rule.packageName, TrustedTime.now(this));
+            ImageButton deleteAction = new ImageButton(this);
+            deleteAction.setImageResource(scheduledDelete
+                    ? com.zealmutex.app.R.drawable.ic_undo
+                    : com.zealmutex.app.R.drawable.ic_delete);
+            deleteAction.setColorFilter(scheduledDelete ? Ui.BLUE : Ui.DANGER);
+            deleteAction.setContentDescription(scheduledDelete
+                    ? "撤销删除" : "删除规则");
+            deleteAction.setBackground(Ui.rounded(
+                    this, Ui.SURFACE_HIGH, 12, 1, Ui.SURFACE_HIGH));
+            deleteAction.setPadding(Ui.dp(this, 12), Ui.dp(this, 12),
+                    Ui.dp(this, 12), Ui.dp(this, 12));
+            deleteAction.setOnClickListener(view -> {
+                if (scheduledDelete) {
+                    store.cancelScheduledDelete(
+                            rule.packageName, TrustedTime.now(this));
+                    Toast.makeText(this, "已撤销删除，规则将继续执行",
+                            Toast.LENGTH_LONG).show();
+                    buildEditor();
+                } else {
+                    confirmDelete();
+                }
+            });
+            header.addView(deleteAction, new LinearLayout.LayoutParams(
+                    Ui.dp(this, 48), Ui.dp(this, 48)));
+        }
         root.addView(header);
 
         String pending = store.pendingDescription(rule.packageName, TrustedTime.now(this));
@@ -208,24 +237,6 @@ public final class RuleEditorActivity extends Activity {
         Button save = Ui.primaryButton(this, existingRule ? "保存设置" : "保存并立即生效");
         save.setOnClickListener(view -> save());
         root.addView(save, Ui.matchWrap(this, 28));
-        if (existingRule) {
-            boolean scheduledDelete = store.hasScheduledDelete(
-                    rule.packageName, TrustedTime.now(this));
-            Button delete = Ui.secondaryButton(this,
-                    scheduledDelete ? "撤销删除" : "明天删除这条规则");
-            delete.setTextColor(Ui.DANGER);
-            delete.setOnClickListener(view -> {
-                if (scheduledDelete) {
-                    store.cancelScheduledDelete(rule.packageName, TrustedTime.now(this));
-                    Toast.makeText(this, "已撤销删除，规则将继续执行",
-                            Toast.LENGTH_LONG).show();
-                    returnToDashboard();
-                } else {
-                    confirmDelete();
-                }
-            });
-            root.addView(delete, Ui.matchWrap(this, 12));
-        }
         root.addView(Ui.text(this,
                 existingRule ? "提醒、图片和锁定页文字保存后立即生效；使用限制、时段、临时解锁和删除将在明天 00:00 生效。"
                         : "首次创建的规则会从今天立即开始，并计入创建前已经使用的时间。",
@@ -432,7 +443,7 @@ public final class RuleEditorActivity extends Activity {
                 .setPositiveButton("确认", (dialog, which) -> {
                     store.scheduleDelete(rule.packageName, TrustedTime.now(this));
                     Toast.makeText(this, "已安排明天删除", Toast.LENGTH_LONG).show();
-                    returnToDashboard();
+                    buildEditor();
                 })
                 .setNegativeButton("取消", null)
                 .show();

@@ -17,6 +17,10 @@ public final class Ui {
     public static final int WHITE = Color.WHITE;
     public static final int MUTED = Color.rgb(168, 168, 168);
     public static final int DANGER = Color.rgb(255, 107, 107);
+    public static final int BLUE = Color.rgb(74, 144, 255);
+    public static final int BLUE_SURFACE = Color.rgb(22, 48, 82);
+    public static final int LOCKED_SURFACE = Color.rgb(78, 37, 40);
+    public static final int LOCKED_TEXT = Color.rgb(255, 177, 181);
 
     private Ui() {
     }
