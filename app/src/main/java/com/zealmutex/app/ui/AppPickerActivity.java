@@ -64,6 +64,7 @@ public final class AppPickerActivity extends Activity {
         list.setAdapter(adapter);
         root.addView(list, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+        Ui.applyStatusBarInset(root);
         setContentView(root);
 
         search.addTextChangedListener(new TextWatcher() {
