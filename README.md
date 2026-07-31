@@ -2,6 +2,11 @@
 
 ZealMutex 是一个面向 Android 10（API 29）及以上系统的本地应用限制工具。项目使用 Java、XML/原生 View 和 Android 系统 API，不依赖 AndroidX、Compose、数据库或网络框架，以尽量缩小 APK。
 
+## 下载与更新日志
+
+- [下载最新正式版 ZealMutex 1.1.0](https://github.com/ZealXun/ZealMutex/releases/latest)：进入本次更新日志页面后，可在页面底部下载 APK 和 SHA-256 校验文件。
+- [查看所有正式版本](https://github.com/ZealXun/ZealMutex/releases)：目前仅保留 ZealMutex 1.1.0。
+
 ## 已实现功能
 
 - 从所有带桌面入口的应用中选择限制对象（包括厂商预装普通应用），按包名保存规则；目标应用卸载重装不会重置规则和当天计时。
