@@ -32,6 +32,7 @@ public final class ReportsActivity extends Activity {
         content = Ui.column(this, 20);
         content.setBackgroundColor(Ui.BLACK);
         scroll.addView(content);
+        Ui.applyStatusBarInset(scroll);
         setContentView(scroll);
 
         content.addView(Ui.title(this, "使用统计", 30f));
