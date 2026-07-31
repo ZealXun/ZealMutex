@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ZealMutex</string>
+    <string name="accessibility_service_name">ZealMutex 应用限制服务</string>
+    <string name="accessibility_service_description">检测受限应用是否可见，并在规则触发时显示锁定页和提醒。所有规则与统计仅保存在本机。</string>
+</resources>
