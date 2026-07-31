@@ -84,6 +84,7 @@ public final class RuleEditorActivity extends Activity {
         LinearLayout root = Ui.column(this, 20);
         root.setBackgroundColor(Ui.BLACK);
         scroll.addView(root);
+        Ui.applyStatusBarInset(scroll);
         setContentView(scroll);
 
         LinearLayout header = new LinearLayout(this);

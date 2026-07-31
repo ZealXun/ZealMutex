@@ -40,6 +40,7 @@ public final class AboutActivity extends Activity {
         root = Ui.column(this, 20);
         root.setBackgroundColor(Ui.BLACK);
         scroll.addView(root);
+        Ui.applyStatusBarInset(scroll);
         setContentView(scroll);
 
         root.addView(Ui.text(this, "ZEALMUTEX", 12f, Ui.MUTED));

@@ -119,6 +119,7 @@ public final class MainActivity extends Activity {
         bottomNavigation.setBackgroundColor(Ui.SURFACE);
         root.addView(bottomNavigation, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        Ui.applyStatusBarInset(root);
         setContentView(root);
     }
 

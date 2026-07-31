@@ -2,9 +2,13 @@ package com.zealmutex.app.ui;
 
 import android.content.Context;
 import android.graphics.Color;
+import android.graphics.Insets;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.os.Build;
+import android.view.View;
 import android.view.ViewGroup;
+import android.view.WindowInsets;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.TextView;
@@ -27,6 +31,21 @@ public final class Ui {
 
     public static int dp(Context context, int value) {
         return Math.round(value * context.getResources().getDisplayMetrics().density);
+    }
+
+    public static void applyStatusBarInset(View view) {
+        if (Build.VERSION.SDK_INT < 35) {
+            return;
+        }
+        int initialTop = view.getPaddingTop();
+        view.setOnApplyWindowInsetsListener((target, windowInsets) -> {
+            Insets insets = windowInsets.getInsets(
+                    WindowInsets.Type.statusBars() | WindowInsets.Type.displayCutout());
+            target.setPadding(target.getPaddingLeft(), initialTop + insets.top,
+                    target.getPaddingRight(), target.getPaddingBottom());
+            return windowInsets;
+        });
+        view.requestApplyInsets();
     }
 
     public static LinearLayout column(Context context, int paddingDp) {
