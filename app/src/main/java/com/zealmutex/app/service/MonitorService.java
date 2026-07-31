@@ -18,6 +18,7 @@ import com.zealmutex.app.data.Rule;
 import com.zealmutex.app.engine.RuleEngine;
 import com.zealmutex.app.engine.TrustedTime;
 import com.zealmutex.app.engine.UsageTracker;
+import com.zealmutex.app.update.UpdateManager;
 
 import java.util.List;
 
@@ -29,6 +30,8 @@ public final class MonitorService extends Service {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private int lastRuleCount = -1;
     private boolean lastAccessibilityState;
+    private boolean lastUsageAccessState;
+    private boolean permissionStateInitialized;
 
     private final Runnable maintenance = new Runnable() {
         @Override
@@ -41,11 +44,7 @@ public final class MonitorService extends Service {
     public static void start(Context context) {
         Intent intent = new Intent(context, MonitorService.class);
         try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent);
-            } else {
-                context.startService(intent);
-            }
+            context.startForegroundService(intent);
         } catch (RuntimeException ignored) {
             // The next foreground app launch or boot event retries safely.
         }
@@ -89,8 +88,9 @@ public final class MonitorService extends Service {
         DataStore store = DataStore.get(this);
         List<Rule> rules = store.getActiveRules(now);
         boolean accessibilityEnabled = isAccessibilityEnabled(this);
+        boolean usageAccess = UsageTracker.hasUsageAccess(this);
 
-        if (UsageTracker.hasUsageAccess(this) && !accessibilityEnabled) {
+        if (usageAccess && !accessibilityEnabled) {
             for (Rule rule : rules) {
                 long systemUsage = UsageTracker.measureTodayForegroundMs(
                         this, rule.packageName, now);
@@ -102,18 +102,33 @@ public final class MonitorService extends Service {
             }
         }
 
-        if (rules.size() != lastRuleCount || accessibilityEnabled != lastAccessibilityState) {
+        if (!permissionStateInitialized
+                || rules.size() != lastRuleCount
+                || accessibilityEnabled != lastAccessibilityState
+                || usageAccess != lastUsageAccessState) {
             lastRuleCount = rules.size();
             lastAccessibilityState = accessibilityEnabled;
-            String status = accessibilityEnabled
+            lastUsageAccessState = usageAccess;
+            boolean ready = accessibilityEnabled && usageAccess;
+            String status = ready
                     ? "已启用 " + rules.size() + " 条应用限制"
-                    : "无障碍服务未开启，当前只能统计不能立即锁定";
+                    : "核心权限未完成，限制功能已暂停";
             NotificationManager manager = getSystemService(NotificationManager.class);
             if (manager != null) {
                 manager.notify(NotificationHelper.ONGOING_ID,
                         NotificationHelper.ongoing(this, status));
             }
+            if (!ready && permissionStateInitialized) {
+                String missing = !usageAccess && !accessibilityEnabled
+                        ? "使用情况访问和无障碍服务已关闭"
+                        : !usageAccess ? "使用情况访问已关闭" : "无障碍服务已关闭";
+                NotificationHelper.showPermissionPaused(this, missing);
+            } else if (ready) {
+                NotificationHelper.clearPermissionPaused(this);
+            }
+            permissionStateInitialized = true;
         }
+        UpdateManager.checkIfDue(this, null);
     }
 
     public static boolean isAccessibilityEnabled(Context context) {

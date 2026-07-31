@@ -11,9 +11,21 @@ if [ -d "$PROJECT_DIR/.tools/android-sdk" ]; then
     export ANDROID_SDK_ROOT="$PROJECT_DIR/.tools/android-sdk"
 fi
 
-if [ -f "$PROJECT_DIR/keystore.properties" ]; then
-    exec "$PROJECT_DIR/gradlew" :app:assembleRelease
-fi
+VARIANT=${1:-dev}
 
-echo "未配置正式签名，正在构建可安装的 debug APK。" >&2
-exec "$PROJECT_DIR/gradlew" :app:assembleDebug
+case "$VARIANT" in
+    dev|debug)
+        exec "$PROJECT_DIR/gradlew" :app:assembleDebug
+        ;;
+    release)
+        if [ ! -f "$PROJECT_DIR/keystore.properties" ]; then
+            echo "缺少 keystore.properties，不能构建正式发行版。" >&2
+            exit 1
+        fi
+        exec "$PROJECT_DIR/gradlew" :app:assembleRelease
+        ;;
+    *)
+        echo "用法: ./build-apk.sh [dev|release]" >&2
+        exit 2
+        ;;
+esac
