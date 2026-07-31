@@ -1,7 +1,6 @@
 package com.zealmutex.app.engine;
 
 import android.content.Context;
-import android.os.SystemClock;
 
 import com.zealmutex.app.data.DataStore;
 import com.zealmutex.app.data.Rule;
@@ -14,13 +13,9 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 /** Pure decision layer shared by the monitoring service and lock overlay. */
 public final class RuleEngine {
-    private static final Map<String, Long> TEMPORARY_UNLOCK_UNTIL =
-            new ConcurrentHashMap<>();
     private static final DateTimeFormatter CLOCK = DateTimeFormatter.ofPattern("HH:mm", Locale.CHINA);
 
     private RuleEngine() {
@@ -31,16 +26,16 @@ public final class RuleEngine {
         long usedMs = store.getTodayUsageMs(rule.packageName, nowMillis);
         int usedUnlocks = store.getTodayTemporaryUnlockCount(rule.packageName, nowMillis);
 
-        Long unlockUntil = TEMPORARY_UNLOCK_UNTIL.get(rule.packageName);
-        if (unlockUntil != null && unlockUntil > SystemClock.elapsedRealtime()) {
-            return Decision.allowed(rule, usedMs, usedUnlocks);
+        long temporaryRemainingMs = store.getTemporaryUnlockRemainingMs(
+                rule.packageName, nowMillis);
+        if (temporaryRemainingMs > 0L) {
+            return Decision.allowed(rule, usedMs, usedUnlocks, temporaryRemainingMs);
         }
-        TEMPORARY_UNLOCK_UNTIL.remove(rule.packageName);
 
         if (rule.mode == Rule.MODE_DAILY_LIMIT) {
             long limitMs = rule.dailyLimitMinutes * 60_000L;
             if (usedMs < limitMs) {
-                return Decision.allowed(rule, usedMs, usedUnlocks);
+                return Decision.allowed(rule, usedMs, usedUnlocks, 0L);
             }
             return Decision.blocked(rule, usedMs, usedUnlocks,
                     "今日使用额度已用完", "明天 00:00");
@@ -54,7 +49,7 @@ public final class RuleEngine {
             if (window.dayOfWeek == day
                     && minute >= window.startMinute
                     && minute < window.endMinute) {
-                return Decision.allowed(rule, usedMs, usedUnlocks);
+                return Decision.allowed(rule, usedMs, usedUnlocks, 0L);
             }
         }
         return Decision.blocked(rule, usedMs, usedUnlocks,
@@ -62,15 +57,7 @@ public final class RuleEngine {
     }
 
     public static boolean startTemporaryUnlock(Context context, Rule rule, long nowMillis) {
-        DataStore store = DataStore.get(context);
-        int used = store.getTodayTemporaryUnlockCount(rule.packageName, nowMillis);
-        if (used >= rule.temporaryUnlocksPerDay || rule.temporaryUnlocksPerDay == 0) {
-            return false;
-        }
-        store.incrementTemporaryUnlockCount(rule, nowMillis);
-        TEMPORARY_UNLOCK_UNTIL.put(rule.packageName,
-                SystemClock.elapsedRealtime() + rule.temporaryUnlockMinutes * 60_000L);
-        return true;
+        return DataStore.get(context).startTemporaryUnlock(rule, nowMillis);
     }
 
     /** Returns newly due cumulative-usage reminders, once for each interval today. */
@@ -141,6 +128,17 @@ public final class RuleEngine {
         return minutes + "分钟";
     }
 
+    public static String formatRemainingDuration(long millis) {
+        long totalMinutes = Math.max(0L, (millis + 59_999L) / 60_000L);
+        long hours = totalMinutes / 60L;
+        long minutes = totalMinutes % 60L;
+        if (hours > 0L) {
+            return minutes == 0L ? hours + "小时"
+                    : hours + "小时" + minutes + "分钟";
+        }
+        return totalMinutes + "分钟";
+    }
+
     private static String nextAllowed(Rule rule, LocalDateTime now) {
         for (int dayOffset = 0; dayOffset <= 7; dayOffset++) {
             LocalDateTime day = now.plusDays(dayOffset).withHour(0).withMinute(0)
@@ -178,26 +176,31 @@ public final class RuleEngine {
         public final Rule rule;
         public final long usedMs;
         public final int usedTemporaryUnlocks;
+        public final long temporaryUnlockRemainingMs;
         public final String reason;
         public final String nextAllowed;
 
         private Decision(boolean blocked, Rule rule, long usedMs, int usedTemporaryUnlocks,
-                         String reason, String nextAllowed) {
+                         long temporaryUnlockRemainingMs, String reason, String nextAllowed) {
             this.blocked = blocked;
             this.rule = rule;
             this.usedMs = usedMs;
             this.usedTemporaryUnlocks = usedTemporaryUnlocks;
+            this.temporaryUnlockRemainingMs = temporaryUnlockRemainingMs;
             this.reason = reason;
             this.nextAllowed = nextAllowed;
         }
 
-        static Decision allowed(Rule rule, long usedMs, int usedTemporaryUnlocks) {
-            return new Decision(false, rule, usedMs, usedTemporaryUnlocks, "", "");
+        static Decision allowed(Rule rule, long usedMs, int usedTemporaryUnlocks,
+                                long temporaryUnlockRemainingMs) {
+            return new Decision(false, rule, usedMs, usedTemporaryUnlocks,
+                    temporaryUnlockRemainingMs, "", "");
         }
 
         static Decision blocked(Rule rule, long usedMs, int usedTemporaryUnlocks,
                                 String reason, String nextAllowed) {
-            return new Decision(true, rule, usedMs, usedTemporaryUnlocks, reason, nextAllowed);
+            return new Decision(true, rule, usedMs, usedTemporaryUnlocks,
+                    0L, reason, nextAllowed);
         }
     }
 

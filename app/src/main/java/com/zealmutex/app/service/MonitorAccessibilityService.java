@@ -1,10 +1,12 @@
 package com.zealmutex.app.service;
 
 import android.accessibilityservice.AccessibilityService;
+import android.app.KeyguardManager;
 import android.graphics.PixelFormat;
 import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.PowerManager;
 import android.os.SystemClock;
 import android.view.Gravity;
 import android.view.MotionEvent;
@@ -42,6 +44,7 @@ import java.util.Set;
 public final class MonitorAccessibilityService extends AccessibilityService {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Set<String> previouslyVisible = new HashSet<>();
+    private final Map<String, Rule> previousRules = new HashMap<>();
     private WindowManager windowManager;
     private View lockView;
     private View bannerView;
@@ -76,7 +79,7 @@ public final class MonitorAccessibilityService extends AccessibilityService {
             DataStore.get(this).seedTodayUsage(rule,
                     UsageTracker.measureTodayForegroundMs(this, rule.packageName, now), now);
         }
-        lastTickElapsed = SystemClock.elapsedRealtime();
+        lastTickElapsed = SystemClock.uptimeMillis();
         handler.post(ticker);
     }
 
@@ -106,27 +109,30 @@ public final class MonitorAccessibilityService extends AccessibilityService {
     }
 
     private void tick() {
-        long elapsed = SystemClock.elapsedRealtime();
-        long delta = Math.min(2_500L, Math.max(0L, elapsed - lastTickElapsed));
+        long elapsed = SystemClock.uptimeMillis();
+        long delta = Math.min(60_000L, Math.max(0L, elapsed - lastTickElapsed));
         lastTickElapsed = elapsed;
         long now = TrustedTime.now(this);
+        boolean deviceUsable = isDeviceUsable();
+
+        if (previousIntervalCountable && deviceUsable) {
+            for (String packageName : previouslyVisible) {
+                Rule rule = previousRules.get(packageName);
+                if (rule != null && !Safety.isAlwaysAllowed(this, packageName)) {
+                    DataStore.get(this).addUsageInterval(rule, now - delta, now);
+                }
+            }
+        }
 
         List<Rule> rules = DataStore.get(this).getActiveRules(now);
         Map<String, Rule> byPackage = new HashMap<>();
         for (Rule rule : rules) {
             byPackage.put(rule.packageName, rule);
         }
+        previousRules.clear();
+        previousRules.putAll(byPackage);
 
-        if (previousIntervalCountable) {
-            for (String packageName : previouslyVisible) {
-                Rule rule = byPackage.get(packageName);
-                if (rule != null && !Safety.isAlwaysAllowed(this, packageName)) {
-                    DataStore.get(this).addUsage(rule, delta, now);
-                }
-            }
-        }
-
-        Set<String> visible = visiblePackages();
+        Set<String> visible = deviceUsable ? visiblePackages() : Collections.emptySet();
         previouslyVisible.clear();
         for (String packageName : visible) {
             if (byPackage.containsKey(packageName)
@@ -174,12 +180,21 @@ public final class MonitorAccessibilityService extends AccessibilityService {
         }
 
         if (blocked == null) {
-            previousIntervalCountable = true;
+            previousIntervalCountable = deviceUsable;
             removeLockView();
         } else {
             previousIntervalCountable = false;
             showOrUpdateLock(blocked);
         }
+    }
+
+    private boolean isDeviceUsable() {
+        PowerManager power = getSystemService(PowerManager.class);
+        if (power == null || !power.isInteractive()) {
+            return false;
+        }
+        KeyguardManager keyguard = getSystemService(KeyguardManager.class);
+        return keyguard == null || !keyguard.isKeyguardLocked();
     }
 
     private Set<String> visiblePackages() {
@@ -311,6 +326,9 @@ public final class MonitorAccessibilityService extends AccessibilityService {
         // Title is white by default; use black for the white reminder card.
         ((TextView) banner.getChildAt(0)).setTextColor(Ui.BLACK);
         final float[] startX = new float[1];
+        banner.setOnClickListener(view -> {
+            // A tap intentionally keeps the five-second reminder visible.
+        });
         banner.setOnTouchListener((view, event) -> {
             if (event.getAction() == MotionEvent.ACTION_DOWN) {
                 startX[0] = event.getRawX();
@@ -319,6 +337,8 @@ public final class MonitorAccessibilityService extends AccessibilityService {
             if (event.getAction() == MotionEvent.ACTION_UP) {
                 if (Math.abs(event.getRawX() - startX[0]) >= Ui.dp(this, 72)) {
                     removeBanner();
+                } else {
+                    view.performClick();
                 }
                 return true;
             }

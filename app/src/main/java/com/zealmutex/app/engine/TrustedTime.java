@@ -31,6 +31,8 @@ public final class TrustedTime {
     private static volatile long baseEpochMillis;
     private static volatile long baseElapsedMillis;
     private static volatile int syncedBootCount = -1;
+    private static volatile long lastSyncedEpochMillis;
+    private static volatile String lastSource = "";
 
     private TrustedTime() {
     }
@@ -73,6 +75,14 @@ public final class TrustedTime {
         });
     }
 
+    public static Status status(Context context) {
+        initialize(context);
+        boolean calibrated = baseEpochMillis > 0L
+                && syncedBootCount == bootCount(context)
+                && SystemClock.elapsedRealtime() >= baseElapsedMillis;
+        return new Status(calibrated, lastSyncedEpochMillis, lastSource);
+    }
+
     private static boolean syncFrom(Context context, String source) {
         HttpURLConnection connection = null;
         try {
@@ -94,10 +104,14 @@ public final class TrustedTime {
             baseEpochMillis = serverEpoch;
             baseElapsedMillis = midpointElapsed;
             syncedBootCount = bootCount(context);
+            lastSyncedEpochMillis = serverEpoch;
+            lastSource = new URL(source).getHost();
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
                     .putLong("baseEpoch", baseEpochMillis)
                     .putLong("baseElapsed", baseElapsedMillis)
                     .putInt("bootCount", syncedBootCount)
+                    .putLong("lastSyncedEpoch", lastSyncedEpochMillis)
+                    .putString("lastSource", lastSource)
                     .apply();
             return true;
         } catch (Exception ignored) {
@@ -118,11 +132,25 @@ public final class TrustedTime {
         baseEpochMillis = preferences.getLong("baseEpoch", 0L);
         baseElapsedMillis = preferences.getLong("baseElapsed", 0L);
         syncedBootCount = preferences.getInt("bootCount", -1);
+        lastSyncedEpochMillis = preferences.getLong("lastSyncedEpoch", 0L);
+        lastSource = preferences.getString("lastSource", "");
         initialized = true;
     }
 
     private static int bootCount(Context context) {
         return Settings.Global.getInt(
                 context.getContentResolver(), Settings.Global.BOOT_COUNT, -1);
+    }
+
+    public static final class Status {
+        public final boolean networkCalibrated;
+        public final long lastSyncedEpochMillis;
+        public final String source;
+
+        private Status(boolean networkCalibrated, long lastSyncedEpochMillis, String source) {
+            this.networkCalibrated = networkCalibrated;
+            this.lastSyncedEpochMillis = lastSyncedEpochMillis;
+            this.source = source;
+        }
     }
 }
