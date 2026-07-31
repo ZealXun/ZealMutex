@@ -1,0 +1,82 @@
+import java.util.Properties
+
+plugins {
+    id 'com.android.application'
+}
+
+def signingPropertiesFile = rootProject.file('keystore.properties')
+def signingProperties = new Properties()
+def hasReleaseSigning = signingPropertiesFile.exists()
+
+if (hasReleaseSigning) {
+    signingPropertiesFile.withInputStream { signingProperties.load(it) }
+    def requiredSigningProperties = ['storeFile', 'storePassword', 'keyAlias', 'keyPassword']
+    def missingSigningProperties = requiredSigningProperties.findAll {
+        !signingProperties.getProperty(it)?.trim()
+    }
+    if (!missingSigningProperties.isEmpty()) {
+        throw new GradleException(
+                "keystore.properties 缺少字段: ${missingSigningProperties.join(', ')}"
+        )
+    }
+}
+
+android {
+    namespace 'com.zealmutex.app'
+    compileSdk 36
+
+    defaultConfig {
+        applicationId 'com.zealmutex.app'
+        minSdk 29
+        targetSdk 36
+        versionCode 4
+        versionName '1.0.3'
+    }
+
+    buildFeatures {
+        buildConfig = false
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    if (hasReleaseSigning) {
+        signingConfigs {
+            release {
+                storeFile rootProject.file(signingProperties.getProperty('storeFile'))
+                storePassword signingProperties.getProperty('storePassword')
+                keyAlias signingProperties.getProperty('keyAlias')
+                keyPassword signingProperties.getProperty('keyPassword')
+            }
+        }
+    }
+
+    buildTypes {
+        debug {
+            applicationIdSuffix '.dev'
+            versionNameSuffix '-dev'
+            resValue 'string', 'app_name', 'ZealMutex Dev'
+            resValue 'string', 'accessibility_service_name', 'ZealMutex Dev 应用限制服务'
+            minifyEnabled false
+        }
+        release {
+            minifyEnabled true
+            shrinkResources true
+            if (hasReleaseSigning) {
+                signingConfig signingConfigs.release
+            }
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    packaging {
+        resources {
+            excludes += ['/META-INF/{AL2.0,LGPL2.1}']
+        }
+    }
+}
+
+dependencies {
+}
