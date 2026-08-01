@@ -92,12 +92,26 @@ public final class MonitorService extends Service {
 
         if (usageAccess && !accessibilityEnabled) {
             for (Rule rule : rules) {
-                long systemUsage = UsageTracker.measureTodayForegroundMs(
-                        this, rule.packageName, now);
-                store.seedTodayUsage(rule, systemUsage, now);
-                for (RuleEngine.ReminderAlert alert
-                        : RuleEngine.collectDueReminders(this, rule, now)) {
-                    NotificationHelper.showReminder(this, alert);
+                if (rule.group) {
+                    for (Rule.AppMember member : rule.members) {
+                        long systemUsage = UsageTracker.measureTodayForegroundMs(
+                                this, member.packageName, now);
+                        store.seedTodayUsage(rule, member.packageName, member.label,
+                                systemUsage, now);
+                        for (RuleEngine.ReminderAlert alert
+                                : RuleEngine.collectDueReminders(
+                                        this, rule, member.packageName, now)) {
+                            NotificationHelper.showReminder(this, alert);
+                        }
+                    }
+                } else {
+                    long systemUsage = UsageTracker.measureTodayForegroundMs(
+                            this, rule.packageName, now);
+                    store.seedTodayUsage(rule, systemUsage, now);
+                    for (RuleEngine.ReminderAlert alert
+                            : RuleEngine.collectDueReminders(this, rule, now)) {
+                        NotificationHelper.showReminder(this, alert);
+                    }
                 }
             }
         }
