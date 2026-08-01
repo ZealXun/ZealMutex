@@ -18,12 +18,14 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
+import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import com.zealmutex.app.R;
 import com.zealmutex.app.data.DataStore;
 import com.zealmutex.app.data.Rule;
 import com.zealmutex.app.engine.BackgroundSettings;
@@ -68,7 +70,9 @@ public final class MainActivity extends Activity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        ThemeManager.applyBeforeCreate(this);
         super.onCreate(savedInstanceState);
+        ThemeManager.applySystemBars(this);
         selectedTab = getIntent().getIntExtra(EXTRA_TAB, TAB_HOME);
         buildShell();
     }
@@ -106,7 +110,7 @@ public final class MainActivity extends Activity {
     private void buildShell() {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(Ui.BLACK);
+        root.setBackgroundColor(Ui.background(this));
 
         body = new LinearLayout(this);
         body.setOrientation(LinearLayout.VERTICAL);
@@ -115,9 +119,9 @@ public final class MainActivity extends Activity {
 
         bottomNavigation = new LinearLayout(this);
         bottomNavigation.setOrientation(LinearLayout.HORIZONTAL);
-        bottomNavigation.setPadding(Ui.dp(this, 12), Ui.dp(this, 8),
-                Ui.dp(this, 12), Ui.dp(this, 10));
-        bottomNavigation.setBackgroundColor(Ui.SURFACE);
+        bottomNavigation.setPadding(0, Ui.dp(this, 6), 0, Ui.dp(this, 8));
+        bottomNavigation.setBackgroundColor(Ui.surface(this));
+        Ui.applyNavigationBarInset(bottomNavigation);
         root.addView(bottomNavigation, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         Ui.applyStatusBarInset(root);
@@ -141,7 +145,7 @@ public final class MainActivity extends Activity {
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
         LinearLayout content = Ui.column(this, 20);
-        content.setBackgroundColor(Ui.BLACK);
+        content.setBackgroundColor(Ui.background(this));
         scroll.addView(content);
 
         LinearLayout topBar = new LinearLayout(this);
@@ -331,7 +335,7 @@ public final class MainActivity extends Activity {
                 15f, Ui.WHITE), new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         TextView percent = Ui.title(this, "剩余 " + remainingPercent + "%", 16f);
-        percent.setTextColor(Ui.BLUE);
+        percent.setTextColor(Ui.accent(this));
         row.addView(percent);
         card.addView(row, Ui.matchWrap(this, 16));
 
@@ -365,14 +369,18 @@ public final class MainActivity extends Activity {
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
         LinearLayout content = Ui.column(this, 20);
-        content.setBackgroundColor(Ui.BLACK);
+        content.setBackgroundColor(Ui.background(this));
         scroll.addView(content);
 
         content.addView(Ui.text(this, "ZEALMUTEX", 12f, Ui.MUTED));
         content.addView(Ui.title(this, "设置", 32f), Ui.matchWrap(this, 8));
-        content.addView(Ui.text(this, "权限、后台运行、报告和应用更新", 14f, Ui.MUTED),
+        content.addView(Ui.text(this, "主题、权限、后台运行、报告和应用更新",
+                        14f, Ui.MUTED),
                 Ui.matchWrap(this, 6));
 
+        content.addView(buildNavigationCard(
+                "主题", ThemeManager.selectedLabel(this), false,
+                view -> showThemeChooser()), Ui.matchWrap(this, 16));
         addPermissionCard(content);
         addTimeStatusCard(content);
         content.addView(buildNavigationCard(
@@ -528,32 +536,71 @@ public final class MainActivity extends Activity {
     private void renderBottomNavigation() {
         bottomNavigation.removeAllViews();
         boolean update = UpdateManager.hasUpdate(this);
-        Button home = navigationButton("主页", selectedTab == TAB_HOME);
+        View home = navigationItem(
+                R.drawable.ic_home, "主页", selectedTab == TAB_HOME, false);
         home.setOnClickListener(view -> selectTab(TAB_HOME));
         bottomNavigation.addView(home, navigationParams());
 
-        Button settings = navigationButton(update ? "设置  ●" : "设置",
-                selectedTab == TAB_SETTINGS);
-        if (update) {
-            settings.setTextColor(Ui.DANGER);
-        }
+        View settings = navigationItem(
+                R.drawable.ic_settings, "设置", selectedTab == TAB_SETTINGS, update);
         settings.setOnClickListener(view -> selectTab(TAB_SETTINGS));
         bottomNavigation.addView(settings, navigationParams());
     }
 
-    private Button navigationButton(String text, boolean selected) {
-        Button button = selected ? Ui.primaryButton(this, text)
-                : Ui.secondaryButton(this, text);
-        button.setMinHeight(Ui.dp(this, 46));
-        return button;
+    private View navigationItem(int iconResource, String label,
+                                boolean selected, boolean showDot) {
+        LinearLayout item = Ui.column(this, 0);
+        item.setGravity(Gravity.CENTER);
+        item.setClickable(true);
+        item.setFocusable(true);
+        item.setContentDescription(label + (selected ? "，当前页面" : ""));
+
+        FrameLayout iconHolder = new FrameLayout(this);
+        ImageView icon = new ImageView(this);
+        icon.setImageResource(iconResource);
+        int color = selected ? Ui.primaryText(this) : Ui.mutedText(this);
+        icon.setColorFilter(color);
+        FrameLayout.LayoutParams iconParams = new FrameLayout.LayoutParams(
+                Ui.dp(this, 25), Ui.dp(this, 25), Gravity.CENTER);
+        iconHolder.addView(icon, iconParams);
+        if (showDot) {
+            TextView dot = Ui.text(this, "●", 11f, Ui.DANGER);
+            dot.setContentDescription("有新版本");
+            FrameLayout.LayoutParams dotParams = new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    Gravity.TOP | Gravity.END);
+            iconHolder.addView(dot, dotParams);
+        }
+        item.addView(iconHolder, new LinearLayout.LayoutParams(
+                Ui.dp(this, 38), Ui.dp(this, 29)));
+        item.addView(Ui.text(this, label, 11f,
+                selected ? Ui.WHITE : Ui.MUTED), Ui.matchWrap(this, 1));
+        return item;
     }
 
     private LinearLayout.LayoutParams navigationParams() {
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                0, Ui.dp(this, 48), 1f);
-        params.setMarginStart(Ui.dp(this, 4));
-        params.setMarginEnd(Ui.dp(this, 4));
+                0, Ui.dp(this, 56), 1f);
         return params;
+    }
+
+    private void showThemeChooser() {
+        int current = ThemeManager.selected(this);
+        new AlertDialog.Builder(this)
+                .setTitle("选择主题")
+                .setSingleChoiceItems(ThemeManager.labels(), current, (dialog, which) -> {
+                    if (which == current) {
+                        dialog.dismiss();
+                        return;
+                    }
+                    ThemeManager.select(this, which);
+                    getIntent().putExtra(EXTRA_TAB, selectedTab);
+                    dialog.dismiss();
+                    recreate();
+                })
+                .setNegativeButton("取消", null)
+                .show();
     }
 
     private void selectTab(int tab) {
