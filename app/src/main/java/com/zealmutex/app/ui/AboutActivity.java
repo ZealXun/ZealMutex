@@ -52,7 +52,10 @@ public final class AboutActivity extends Activity {
         addCard("当前版本", installedVersion()
                 + "\n支持 Android 10（API 29）及以上系统");
         addCard("更新日志",
-                "1.2.0 · 2026-08-01\n"
+                "1.2.1 · 2026-08-01\n"
+                        + "• 修复部分 Android 16 设备启动闪退\n"
+                        + "• 延迟系统栏外观设置，等待页面准备完成\n\n"
+                        + "1.2.0 · 2026-08-01\n"
                         + "• 每条规则可选择生效星期\n"
                         + "• 新增多个应用共用限制的应用组\n"
                         + "• 新增五种主题和一体式图标导航\n\n"
