@@ -119,7 +119,7 @@ public final class MainActivity extends Activity {
 
         bottomNavigation = new LinearLayout(this);
         bottomNavigation.setOrientation(LinearLayout.HORIZONTAL);
-        bottomNavigation.setPadding(0, Ui.dp(this, 6), 0, Ui.dp(this, 8));
+        bottomNavigation.setPadding(0, Ui.dp(this, 4), 0, Ui.dp(this, 4));
         bottomNavigation.setBackgroundColor(Ui.surface(this));
         Ui.applyNavigationBarInset(bottomNavigation);
         root.addView(bottomNavigation, new LinearLayout.LayoutParams(
@@ -156,12 +156,15 @@ public final class MainActivity extends Activity {
         topBar.addView(eyebrow, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         if (!rules.isEmpty()) {
-            Button add = Ui.secondaryButton(this, "+");
-            add.setTextSize(23f);
+            TextView add = Ui.text(this, "+", 23f, Ui.WHITE);
+            add.setGravity(Gravity.CENTER);
+            add.setBackground(Ui.rounded(this, Ui.SURFACE_HIGH, 8, 0, 0));
             add.setContentDescription("添加应用");
+            add.setClickable(true);
+            add.setFocusable(true);
             add.setOnClickListener(view -> beginAddApplication());
             topBar.addView(add, new LinearLayout.LayoutParams(
-                    Ui.dp(this, 52), Ui.dp(this, 42)));
+                    Ui.dp(this, 32), Ui.dp(this, 32)));
         }
         content.addView(topBar);
         content.addView(Ui.title(this, "主页", 32f), Ui.matchWrap(this, 8));
@@ -574,14 +577,16 @@ public final class MainActivity extends Activity {
         }
         item.addView(iconHolder, new LinearLayout.LayoutParams(
                 Ui.dp(this, 38), Ui.dp(this, 29)));
-        item.addView(Ui.text(this, label, 11f,
-                selected ? Ui.WHITE : Ui.MUTED), Ui.matchWrap(this, 1));
+        TextView labelView = Ui.text(this, label, 11f,
+                selected ? Ui.WHITE : Ui.MUTED);
+        labelView.setGravity(Gravity.CENTER);
+        item.addView(labelView, Ui.matchWrap(this, 1));
         return item;
     }
 
     private LinearLayout.LayoutParams navigationParams() {
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                0, Ui.dp(this, 56), 1f);
+                0, Ui.dp(this, 52), 1f);
         return params;
     }
 

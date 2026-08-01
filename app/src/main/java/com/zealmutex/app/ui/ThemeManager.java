@@ -72,18 +72,22 @@ public final class ThemeManager {
         activity.getWindow().setStatusBarColor(Ui.background(activity));
         activity.getWindow().setNavigationBarColor(Ui.surface(activity));
         boolean light = isLight(activity);
+        View decorView = activity.getWindow().getDecorView();
         if (Build.VERSION.SDK_INT >= 30) {
-            WindowInsetsController controller = activity.getWindow().getInsetsController();
-            if (controller != null) {
-                int mask = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
-                        | WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;
-                controller.setSystemBarsAppearance(light ? mask : 0, mask);
-            }
+            int mask = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
+                    | WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;
+            // Some OEM Android 16 builds crash if Window is queried before DecorView is ready.
+            decorView.post(() -> {
+                WindowInsetsController controller = decorView.getWindowInsetsController();
+                if (controller != null) {
+                    controller.setSystemBarsAppearance(light ? mask : 0, mask);
+                }
+            });
         } else {
             int flags = light
                     ? View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
                     | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR : 0;
-            activity.getWindow().getDecorView().setSystemUiVisibility(flags);
+            decorView.setSystemUiVisibility(flags);
         }
     }
 }
