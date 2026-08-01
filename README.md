@@ -4,7 +4,7 @@ ZealMutex 是一个面向 Android 10（API 29）及以上系统的本地应用�
 
 ## 下载与更新日志
 
-- [下载最新正式版 ZealMutex 1.1.0](https://github.com/ZealXun/ZealMutex/releases/latest)：进入本次更新日志页面后，可在页面底部下载 APK 和 SHA-256 校验文件。
+- [下载最新正式版 ZealMutex 1.2.0](https://github.com/ZealXun/ZealMutex/releases/latest)：进入本次更新日志页面后，可在页面底部下载 APK 和 SHA-256 校验文件。
 - [查看所有正式版本](https://github.com/ZealXun/ZealMutex/releases)
 
 ## 已实现功能
