@@ -10,6 +10,7 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
+import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.ImageButton;
@@ -24,7 +25,6 @@ import android.widget.Toast;
 import com.zealmutex.app.data.DataStore;
 import com.zealmutex.app.data.Rule;
 import com.zealmutex.app.engine.TrustedTime;
-import com.zealmutex.app.engine.UsageTracker;
 import com.zealmutex.app.service.MonitorService;
 
 import java.util.ArrayList;
@@ -47,6 +47,8 @@ public final class RuleEditorActivity extends Activity {
     private LinearLayout dailySection;
     private LinearLayout windowSection;
     private LinearLayout windowList;
+    private final CheckBox[] weekdayChecks = new CheckBox[7];
+    private CheckBox remindOnInactiveDays;
     private EditText dailyMinutes;
     private EditText extraMessage;
     private EditText reminderInterval;
@@ -134,12 +136,37 @@ public final class RuleEditorActivity extends Activity {
 
         String pending = store.pendingDescription(rule.packageName, TrustedTime.now(this));
         if (!pending.isEmpty()) {
-            TextView notice = Ui.text(this, pending + "；今天仍执行当前限制。", 13f, Ui.BLACK);
+            String detail = existingRule ? "；今天仍执行当前限制。" : "；生效前不会限制。";
+            TextView notice = Ui.text(this, pending + detail, 13f, Ui.BLACK);
             notice.setPadding(Ui.dp(this, 12), Ui.dp(this, 10),
                     Ui.dp(this, 12), Ui.dp(this, 10));
             notice.setBackground(Ui.rounded(this, Ui.WHITE, 10, 0, 0));
             root.addView(notice, Ui.matchWrap(this, 18));
         }
+
+        root.addView(Ui.title(this, "生效星期", 20f), Ui.matchWrap(this, 28));
+        LinearLayout weekdayCard = Ui.card(this);
+        weekdayCard.addView(Ui.text(this,
+                "选中的日期执行限制；未选日期仍统计使用时长。",
+                13f, Ui.MUTED));
+        for (int rowIndex = 0; rowIndex < 2; rowIndex++) {
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            int start = rowIndex == 0 ? 0 : 4;
+            int end = rowIndex == 0 ? 4 : 7;
+            for (int day = start; day < end; day++) {
+                CheckBox check = new CheckBox(this);
+                check.setText(WEEKDAYS[day]);
+                check.setTextColor(Ui.WHITE);
+                check.setTextSize(14f);
+                check.setChecked(rule.isActiveOnDay(day + 1));
+                weekdayChecks[day] = check;
+                row.addView(check, new LinearLayout.LayoutParams(
+                        0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            }
+            weekdayCard.addView(row, Ui.matchWrap(this, rowIndex == 0 ? 10 : 2));
+        }
+        root.addView(weekdayCard);
 
         root.addView(Ui.title(this, "限制模式", 20f), Ui.matchWrap(this, 28));
         modeGroup = new RadioGroup(this);
@@ -163,7 +190,7 @@ public final class RuleEditorActivity extends Activity {
 
         windowSection = Ui.card(this);
         windowSection.addView(Ui.text(this,
-                "可为不同星期添加多个时段；结束时间必须晚于开始时间。",
+                "可添加多个共用时段；所有选中的星期使用相同时段。",
                 13f, Ui.MUTED));
         windowList = Ui.column(this, 0);
         windowSection.addView(windowList, Ui.matchWrap(this, 10));
@@ -179,6 +206,12 @@ public final class RuleEditorActivity extends Activity {
         reminderCard.addView(Ui.text(this,
                 "按当天累计使用时间循环提醒；留空表示关闭提醒。",
                 13f, Ui.MUTED));
+        remindOnInactiveDays = new CheckBox(this);
+        remindOnInactiveDays.setText("非限制日仍继续提醒");
+        remindOnInactiveDays.setTextColor(Ui.WHITE);
+        remindOnInactiveDays.setTextSize(14f);
+        remindOnInactiveDays.setChecked(rule.remindOnInactiveDays);
+        reminderCard.addView(remindOnInactiveDays, Ui.matchWrap(this, 8));
         reminderCard.addView(Ui.text(this, "每使用多少分钟提醒一次（1～1440）",
                 14f, Ui.MUTED), Ui.matchWrap(this, 12));
         reminderInterval = input(currentReminder == null ? ""
@@ -235,12 +268,12 @@ public final class RuleEditorActivity extends Activity {
         extraMessage.setMinLines(2);
         root.addView(extraMessage, Ui.matchWrap(this, 10));
 
-        Button save = Ui.primaryButton(this, existingRule ? "保存设置" : "保存并立即生效");
+        Button save = Ui.primaryButton(this, existingRule ? "保存设置" : "保存，明天生效");
         save.setOnClickListener(view -> save());
         root.addView(save, Ui.matchWrap(this, 28));
         root.addView(Ui.text(this,
-                existingRule ? "提醒、图片和锁定页文字保存后立即生效；使用限制、时段、临时解锁和删除将在明天 00:00 生效。"
-                        : "首次创建的规则会从今天立即开始，并计入创建前已经使用的时间。",
+                existingRule ? "提醒、非限制日提醒开关、图片和锁定页文字立即生效；星期、使用限制、时段、临时解锁和删除将在明天 00:00 生效。"
+                        : "首次创建的规则和全部设置将在明天 00:00 生效。",
                 12f, Ui.MUTED), Ui.matchWrap(this, 14));
 
         modeGroup.setOnCheckedChangeListener((group, checkedId) -> updateModeVisibility());
@@ -319,27 +352,10 @@ public final class RuleEditorActivity extends Activity {
     }
 
     private void beginAddWindow() {
-        boolean[] selected = new boolean[7];
-        new AlertDialog.Builder(this)
-                .setTitle("选择星期")
-                .setMultiChoiceItems(WEEKDAYS, selected,
-                        (dialog, which, checked) -> selected[which] = checked)
-                .setPositiveButton("下一步", (dialog, which) -> {
-                    boolean any = false;
-                    for (boolean value : selected) {
-                        any |= value;
-                    }
-                    if (!any) {
-                        Toast.makeText(this, "至少选择一天", Toast.LENGTH_SHORT).show();
-                        return;
-                    }
-                    chooseStartTime(selected);
-                })
-                .setNegativeButton("取消", null)
-                .show();
+        chooseStartTime();
     }
 
-    private void chooseStartTime(boolean[] selectedDays) {
+    private void chooseStartTime() {
         new TimePickerDialog(this, (picker, hour, minute) -> {
             int start = hour * 60 + minute;
             new TimePickerDialog(this, (endPicker, endHour, endMinute) -> {
@@ -349,11 +365,7 @@ public final class RuleEditorActivity extends Activity {
                             Toast.LENGTH_LONG).show();
                     return;
                 }
-                for (int i = 0; i < selectedDays.length; i++) {
-                    if (selectedDays[i]) {
-                        rule.windows.add(new Rule.TimeWindow(i + 1, start, end));
-                    }
-                }
+                rule.windows.add(new Rule.TimeWindow(start, end));
                 renderWindows();
             }, Math.min(23, hour + 1), minute, true).show();
         }, 18, 0, true).show();
@@ -361,10 +373,8 @@ public final class RuleEditorActivity extends Activity {
 
     private void renderWindows() {
         windowList.removeAllViews();
-        Collections.sort(rule.windows, (left, right) -> {
-            int day = Integer.compare(left.dayOfWeek, right.dayOfWeek);
-            return day != 0 ? day : Integer.compare(left.startMinute, right.startMinute);
-        });
+        Collections.sort(rule.windows,
+                (left, right) -> Integer.compare(left.startMinute, right.startMinute));
         if (rule.windows.isEmpty()) {
             windowList.addView(Ui.text(this, "尚未添加时段", 14f, Ui.MUTED));
             return;
@@ -373,8 +383,7 @@ public final class RuleEditorActivity extends Activity {
         for (Rule.TimeWindow window : snapshot) {
             LinearLayout row = new LinearLayout(this);
             row.setGravity(Gravity.CENTER_VERTICAL);
-            String value = WEEKDAYS[window.dayOfWeek - 1] + "  "
-                    + clock(window.startMinute) + "–" + clock(window.endMinute);
+            String value = clock(window.startMinute) + "–" + clock(window.endMinute);
             row.addView(Ui.text(this, value, 15f, Ui.WHITE),
                     new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
             Button remove = Ui.secondaryButton(this, "删除");
@@ -388,6 +397,16 @@ public final class RuleEditorActivity extends Activity {
     }
 
     private void save() {
+        rule.activeWeekdaysMask = 0;
+        for (int day = 0; day < weekdayChecks.length; day++) {
+            if (weekdayChecks[day].isChecked()) {
+                rule.setActiveOnDay(day + 1, true);
+            }
+        }
+        if (rule.activeWeekdaysMask == 0) {
+            Toast.makeText(this, "至少选择一个生效星期", Toast.LENGTH_LONG).show();
+            return;
+        }
         rule.mode = modeGroup.getCheckedRadioButtonId() == dailyRadioId
                 ? Rule.MODE_DAILY_LIMIT : Rule.MODE_TIME_WINDOWS;
         rule.dailyLimitMinutes = Math.max(1, Math.min(1440,
@@ -398,6 +417,7 @@ public final class RuleEditorActivity extends Activity {
         }
         rule.temporaryUnlocksPerDay = unlockCount.getValue();
         rule.temporaryUnlockMinutes = unlockMinutes.getValue();
+        rule.remindOnInactiveDays = remindOnInactiveDays.isChecked();
         rule.extraLockMessage = extraMessage.getText().toString().trim();
         String intervalValue = reminderInterval.getText().toString().trim();
         rule.reminders.clear();
@@ -418,14 +438,10 @@ public final class RuleEditorActivity extends Activity {
 
         long now = TrustedTime.now(this);
         boolean firstRule = store.saveRule(rule, now);
-        if (firstRule && UsageTracker.hasUsageAccess(this)) {
-            store.seedTodayUsage(rule, UsageTracker.measureTodayForegroundMs(
-                    this, rule.packageName, now), now);
-        }
         MonitorService.start(this);
         String result;
         if (firstRule) {
-            result = "规则已立即生效";
+            result = "规则将在明天 00:00 生效";
         } else if (store.hasScheduledDelete(rule.packageName, now)) {
             result = "提醒和文字已立即生效；删除仍将在明天生效";
         } else if (!store.pendingDescription(rule.packageName, now).isEmpty()) {

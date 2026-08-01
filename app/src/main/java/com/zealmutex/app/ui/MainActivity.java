@@ -136,7 +136,7 @@ public final class MainActivity extends Activity {
 
     private View buildHome() {
         long now = TrustedTime.now(this);
-        List<Rule> rules = DataStore.get(this).getActiveRules(now);
+        List<Rule> rules = DataStore.get(this).getRulesForDisplay(now);
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
         LinearLayout content = Ui.column(this, 20);
@@ -198,6 +198,8 @@ public final class MainActivity extends Activity {
 
     private View buildRuleCard(Rule rule, long now) {
         DataStore store = DataStore.get(this);
+        boolean pendingActivation = store.getActiveRule(rule.packageName, now) == null;
+        boolean restrictionActive = RuleEngine.isRestrictionActive(rule, now);
         RuleEngine.Decision decision = RuleEngine.evaluate(this, rule, now);
         LinearLayout card = Ui.card(this);
         card.setClickable(true);
@@ -220,25 +222,34 @@ public final class MainActivity extends Activity {
         labels.addView(Ui.text(this,
                 rule.mode == Rule.MODE_DAILY_LIMIT ? "每日使用时长" : "允许使用时段",
                 12f, Ui.MUTED), Ui.matchWrap(this, 3));
+        labels.addView(Ui.text(this, activeWeekdays(rule), 12f, Ui.MUTED),
+                Ui.matchWrap(this, 2));
         header.addView(labels, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         card.addView(header);
 
-        card.addView(buildStatus(decision), Ui.matchWrap(this, 14));
-        if (rule.mode == Rule.MODE_DAILY_LIMIT) {
+        card.addView(buildStatus(decision, pendingActivation, restrictionActive),
+                Ui.matchWrap(this, 14));
+        if (!pendingActivation && restrictionActive && rule.mode == Rule.MODE_DAILY_LIMIT) {
             addDailyProgress(card, rule, decision.usedMs);
+        } else if (!pendingActivation && !restrictionActive) {
+            card.addView(Ui.text(this,
+                    "今日已使用 " + RuleEngine.formatDuration(decision.usedMs),
+                    13f, Ui.MUTED), Ui.matchWrap(this, 10));
         }
 
-        int remainingUnlocks = Math.max(0,
-                rule.temporaryUnlocksPerDay - decision.usedTemporaryUnlocks);
-        card.addView(Ui.text(this,
-                "今日还可临时解锁 " + remainingUnlocks + " 次",
-                13f, Ui.MUTED), Ui.matchWrap(this, 12));
+        if (!pendingActivation && restrictionActive) {
+            int remainingUnlocks = Math.max(0,
+                    rule.temporaryUnlocksPerDay - decision.usedTemporaryUnlocks);
+            card.addView(Ui.text(this,
+                    "今日还可临时解锁 " + remainingUnlocks + " 次",
+                    13f, Ui.MUTED), Ui.matchWrap(this, 12));
+        }
 
         String pending = store.pendingDescription(rule.packageName, now);
         if (!pending.isEmpty()) {
             String value = store.hasScheduledDelete(rule.packageName, now)
-                    ? "明日删除" : "明日生效 · " + pending;
+                    ? "明日删除" : pending;
             TextView pendingLabel = Ui.text(this, value, 12f, Ui.WHITE);
             pendingLabel.setPadding(Ui.dp(this, 10), Ui.dp(this, 7),
                     Ui.dp(this, 10), Ui.dp(this, 7));
@@ -249,11 +260,20 @@ public final class MainActivity extends Activity {
         return card;
     }
 
-    private View buildStatus(RuleEngine.Decision decision) {
+    private View buildStatus(RuleEngine.Decision decision, boolean pendingActivation,
+                             boolean restrictionActive) {
         String value;
         int fill;
         int color;
-        if (decision.temporaryUnlockRemainingMs > 0L) {
+        if (pendingActivation) {
+            value = "规则尚未生效";
+            fill = Ui.SURFACE_HIGH;
+            color = Ui.MUTED;
+        } else if (!restrictionActive) {
+            value = "今日不限制";
+            fill = Ui.SURFACE_HIGH;
+            color = Ui.BLUE;
+        } else if (decision.temporaryUnlockRemainingMs > 0L) {
             value = "临时解锁中 · 剩余 "
                     + RuleEngine.formatRemainingDuration(decision.temporaryUnlockRemainingMs);
             fill = Ui.BLUE_SURFACE;
@@ -274,6 +294,21 @@ public final class MainActivity extends Activity {
                 Ui.dp(this, 11), Ui.dp(this, 9));
         status.setBackground(Ui.rounded(this, fill, 10, 0, 0));
         return status;
+    }
+
+    private static String activeWeekdays(Rule rule) {
+        String[] names = {"周一", "周二", "周三", "周四", "周五", "周六", "周日"};
+        StringBuilder value = new StringBuilder("生效：");
+        for (int day = 1; day <= 7; day++) {
+            if (!rule.isActiveOnDay(day)) {
+                continue;
+            }
+            if (value.length() > 3) {
+                value.append('、');
+            }
+            value.append(names[day - 1]);
+        }
+        return value.toString();
     }
 
     private void addDailyProgress(LinearLayout card, Rule rule, long usedMs) {
