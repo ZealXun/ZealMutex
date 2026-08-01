@@ -156,12 +156,15 @@ public final class MainActivity extends Activity {
         topBar.addView(eyebrow, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         if (!rules.isEmpty()) {
-            Button add = Ui.secondaryButton(this, "+");
-            add.setTextSize(23f);
+            TextView add = Ui.text(this, "+", 23f, Ui.WHITE);
+            add.setGravity(Gravity.CENTER);
+            add.setBackground(Ui.rounded(this, Ui.SURFACE_HIGH, 8, 0, 0));
             add.setContentDescription("添加应用");
+            add.setClickable(true);
+            add.setFocusable(true);
             add.setOnClickListener(view -> beginAddApplication());
             topBar.addView(add, new LinearLayout.LayoutParams(
-                    Ui.dp(this, 44), Ui.dp(this, 42)));
+                    Ui.dp(this, 32), Ui.dp(this, 32)));
         }
         content.addView(topBar);
         content.addView(Ui.title(this, "主页", 32f), Ui.matchWrap(this, 8));
