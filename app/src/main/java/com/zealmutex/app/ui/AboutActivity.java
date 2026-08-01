@@ -23,7 +23,9 @@ public final class AboutActivity extends Activity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        ThemeManager.applyBeforeCreate(this);
         super.onCreate(savedInstanceState);
+        ThemeManager.applySystemBars(this);
         build();
     }
 
@@ -38,7 +40,7 @@ public final class AboutActivity extends Activity {
     private void build() {
         ScrollView scroll = new ScrollView(this);
         root = Ui.column(this, 20);
-        root.setBackgroundColor(Ui.BLACK);
+        root.setBackgroundColor(Ui.background(this));
         scroll.addView(root);
         Ui.applyStatusBarInset(scroll);
         setContentView(scroll);

@@ -69,7 +69,9 @@ public final class RuleEditorActivity extends Activity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        ThemeManager.applyBeforeCreate(this);
         super.onCreate(savedInstanceState);
+        ThemeManager.applySystemBars(this);
         creatingGroup = getIntent().getBooleanExtra(EXTRA_CREATE_GROUP, false);
         String packageName = getIntent().getStringExtra("package");
         String label = getIntent().getStringExtra("label");
@@ -99,7 +101,7 @@ public final class RuleEditorActivity extends Activity {
     private void buildEditor() {
         ScrollView scroll = new ScrollView(this);
         LinearLayout root = Ui.column(this, 20);
-        root.setBackgroundColor(Ui.BLACK);
+        root.setBackgroundColor(Ui.background(this));
         scroll.addView(root);
         Ui.applyStatusBarInset(scroll);
         setContentView(scroll);
@@ -131,7 +133,8 @@ public final class RuleEditorActivity extends Activity {
             deleteAction.setImageResource(scheduledDelete
                     ? com.zealmutex.app.R.drawable.ic_undo
                     : com.zealmutex.app.R.drawable.ic_delete);
-            deleteAction.setColorFilter(scheduledDelete ? Ui.BLUE : Ui.DANGER);
+            deleteAction.setColorFilter(Ui.color(
+                    this, scheduledDelete ? Ui.BLUE : Ui.DANGER));
             deleteAction.setContentDescription(scheduledDelete
                     ? "撤销删除" : "删除规则");
             deleteAction.setBackground(Ui.rounded(
@@ -181,7 +184,7 @@ public final class RuleEditorActivity extends Activity {
             for (int day = start; day < end; day++) {
                 CheckBox check = new CheckBox(this);
                 check.setText(WEEKDAYS[day]);
-                check.setTextColor(Ui.WHITE);
+                check.setTextColor(Ui.primaryText(this));
                 check.setTextSize(14f);
                 check.setChecked(rule.isActiveOnDay(day + 1));
                 weekdayChecks[day] = check;
@@ -232,7 +235,7 @@ public final class RuleEditorActivity extends Activity {
                 13f, Ui.MUTED));
         remindOnInactiveDays = new CheckBox(this);
         remindOnInactiveDays.setText("非限制日仍继续提醒");
-        remindOnInactiveDays.setTextColor(Ui.WHITE);
+        remindOnInactiveDays.setTextColor(Ui.primaryText(this));
         remindOnInactiveDays.setTextSize(14f);
         remindOnInactiveDays.setChecked(rule.remindOnInactiveDays);
         reminderCard.addView(remindOnInactiveDays, Ui.matchWrap(this, 8));
@@ -317,7 +320,7 @@ public final class RuleEditorActivity extends Activity {
     private RadioButton radio(String text) {
         RadioButton button = new RadioButton(this);
         button.setText(text);
-        button.setTextColor(Ui.WHITE);
+        button.setTextColor(Ui.primaryText(this));
         button.setTextSize(16f);
         button.setPadding(0, Ui.dp(this, 5), 0, Ui.dp(this, 5));
         return button;
@@ -390,8 +393,8 @@ public final class RuleEditorActivity extends Activity {
         EditText edit = new EditText(this);
         edit.setText(value);
         edit.setHint(hint);
-        edit.setTextColor(Ui.WHITE);
-        edit.setHintTextColor(Ui.MUTED);
+        edit.setTextColor(Ui.primaryText(this));
+        edit.setHintTextColor(Ui.mutedText(this));
         edit.setBackground(Ui.rounded(this, Ui.SURFACE, 10, 1, Ui.SURFACE_HIGH));
         edit.setPadding(Ui.dp(this, 12), Ui.dp(this, 10),
                 Ui.dp(this, 12), Ui.dp(this, 10));
