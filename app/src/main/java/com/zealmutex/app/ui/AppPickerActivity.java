@@ -1,6 +1,7 @@
 package com.zealmutex.app.ui;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
@@ -13,14 +14,20 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.BaseAdapter;
+import android.widget.Button;
+import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ListView;
 import android.widget.ProgressBar;
 import android.widget.TextView;
+import android.widget.Toast;
 
+import com.zealmutex.app.data.DataStore;
+import com.zealmutex.app.data.Rule;
 import com.zealmutex.app.engine.Safety;
+import com.zealmutex.app.engine.TrustedTime;
 
 import java.text.Collator;
 import java.util.ArrayList;
@@ -32,18 +39,46 @@ import java.util.Map;
 
 /** Searchable list of third-party launchable apps, including visible clones. */
 public final class AppPickerActivity extends Activity {
+    public static final String EXTRA_MULTI_SELECT = "multiSelect";
+    public static final String EXTRA_EDITING_RULE_KEY = "editingRuleKey";
+    public static final String EXTRA_SELECTED_PACKAGES = "selectedPackages";
+    public static final String EXTRA_SELECTED_LABELS = "selectedLabels";
+
     private final List<AppItem> allApps = new ArrayList<>();
     private final List<AppItem> shownApps = new ArrayList<>();
+    private final Map<String, String> selected = new LinkedHashMap<>();
     private AppAdapter adapter;
     private ProgressBar progress;
+    private boolean multiSelect;
+    private String editingRuleKey = "";
+    private Button confirmButton;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        multiSelect = getIntent().getBooleanExtra(EXTRA_MULTI_SELECT, false);
+        editingRuleKey = getIntent().getStringExtra(EXTRA_EDITING_RULE_KEY);
+        if (editingRuleKey == null) {
+            editingRuleKey = "";
+        }
+        ArrayList<String> selectedPackages = getIntent().getStringArrayListExtra(
+                EXTRA_SELECTED_PACKAGES);
+        ArrayList<String> selectedLabels = getIntent().getStringArrayListExtra(
+                EXTRA_SELECTED_LABELS);
+        if (selectedPackages != null) {
+            for (int i = 0; i < selectedPackages.size(); i++) {
+                String label = selectedLabels != null && i < selectedLabels.size()
+                        ? selectedLabels.get(i) : selectedPackages.get(i);
+                selected.put(selectedPackages.get(i), label);
+            }
+        }
         LinearLayout root = Ui.column(this, 20);
         root.setBackgroundColor(Ui.BLACK);
-        root.addView(Ui.title(this, "选择应用", 28f));
-        root.addView(Ui.text(this, "系统关键应用已自动排除", 14f, Ui.MUTED),
+        root.addView(Ui.title(this, multiSelect ? "选择组内应用" : "选择应用", 28f));
+        root.addView(Ui.text(this, multiSelect
+                        ? "按选择顺序排列；已归属应用会在明天迁移"
+                        : "系统关键应用与已设置应用不会重复添加",
+                14f, Ui.MUTED),
                 Ui.matchWrap(this, 6));
 
         EditText search = new EditText(this);
@@ -64,6 +99,11 @@ public final class AppPickerActivity extends Activity {
         list.setAdapter(adapter);
         root.addView(list, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+        if (multiSelect) {
+            confirmButton = Ui.primaryButton(this, "完成选择（" + selected.size() + "）");
+            confirmButton.setOnClickListener(view -> finishMultiSelection());
+            root.addView(confirmButton, Ui.matchWrap(this, 12));
+        }
         Ui.applyStatusBarInset(root);
         setContentView(root);
 
@@ -158,14 +198,91 @@ public final class AppPickerActivity extends Activity {
             labels.addView(Ui.title(AppPickerActivity.this, item.label, 16f));
             labels.addView(Ui.text(AppPickerActivity.this, item.packageName, 11f, Ui.MUTED),
                     Ui.matchWrap(AppPickerActivity.this, 3));
+            Rule owner = DataStore.get(AppPickerActivity.this).getEditableRuleForPackage(
+                    item.packageName, TrustedTime.now(AppPickerActivity.this));
+            if (owner != null && !owner.packageName.equals(editingRuleKey)) {
+                labels.addView(Ui.text(AppPickerActivity.this,
+                        "当前属于：" + owner.appLabel, 12f, Ui.LOCKED_TEXT),
+                        Ui.matchWrap(AppPickerActivity.this, 3));
+            }
             row.addView(labels, new LinearLayout.LayoutParams(0,
                     ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-            row.setOnClickListener(view -> startActivity(new Intent(
-                    AppPickerActivity.this, RuleEditorActivity.class)
-                    .putExtra("package", item.packageName)
-                    .putExtra("label", item.label)));
+            if (multiSelect) {
+                CheckBox check = new CheckBox(AppPickerActivity.this);
+                check.setChecked(selected.containsKey(item.packageName));
+                check.setClickable(false);
+                row.addView(check);
+                row.setOnClickListener(view -> selectForGroup(item, owner));
+            } else {
+                row.setAlpha(owner == null ? 1f : 0.55f);
+                row.setOnClickListener(view -> {
+                    if (owner != null) {
+                        Toast.makeText(AppPickerActivity.this,
+                                "该应用已属于“" + owner.appLabel + "”",
+                                Toast.LENGTH_LONG).show();
+                        return;
+                    }
+                    startActivity(new Intent(AppPickerActivity.this, RuleEditorActivity.class)
+                            .putExtra("package", item.packageName)
+                            .putExtra("label", item.label));
+                    finish();
+                });
+            }
             return row;
         }
+    }
+
+    private void selectForGroup(AppItem item, Rule owner) {
+        if (selected.containsKey(item.packageName)) {
+            selected.remove(item.packageName);
+            selectionChanged();
+            return;
+        }
+        if (owner == null || owner.packageName.equals(editingRuleKey)) {
+            addSelection(item);
+            return;
+        }
+        String message = "“" + item.label + "”当前属于“" + owner.appLabel
+                + "”。保存应用组后，它将在明天 00:00 迁移到当前组。";
+        if (owner.group && owner.members.size() == 2) {
+            Rule.AppMember remaining = owner.members.get(0).packageName.equals(item.packageName)
+                    ? owner.members.get(1) : owner.members.get(0);
+            message += "\n\n如果最终只从原组迁移这一个应用，原组将只剩“"
+                    + remaining.label + "”，届时会自动转为该应用的单独规则。";
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("迁移应用？")
+                .setMessage(message)
+                .setPositiveButton("继续选择", (dialog, which) -> addSelection(item))
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private void addSelection(AppItem item) {
+        selected.put(item.packageName, item.label);
+        selectionChanged();
+    }
+
+    private void selectionChanged() {
+        if (confirmButton != null) {
+            confirmButton.setText(String.format(
+                    Locale.CHINA, "完成选择（%d）", selected.size()));
+        }
+        adapter.notifyDataSetChanged();
+    }
+
+    private void finishMultiSelection() {
+        if (selected.isEmpty()) {
+            Toast.makeText(this, "请至少选择一个应用", Toast.LENGTH_LONG).show();
+            return;
+        }
+        Intent result = new Intent();
+        result.putStringArrayListExtra(EXTRA_SELECTED_PACKAGES,
+                new ArrayList<>(selected.keySet()));
+        result.putStringArrayListExtra(EXTRA_SELECTED_LABELS,
+                new ArrayList<>(selected.values()));
+        setResult(RESULT_OK, result);
+        finish();
     }
 
     private static final class AppItem {

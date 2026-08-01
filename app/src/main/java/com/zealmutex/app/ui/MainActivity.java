@@ -2,6 +2,7 @@ package com.zealmutex.app.ui;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.app.NotificationManager;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -209,23 +210,28 @@ public final class MainActivity extends Activity {
         LinearLayout header = new LinearLayout(this);
         header.setOrientation(LinearLayout.HORIZONTAL);
         header.setGravity(Gravity.CENTER_VERTICAL);
-        try {
-            ImageView icon = new ImageView(this);
-            icon.setImageDrawable(getPackageManager().getApplicationIcon(rule.packageName));
-            header.addView(icon, new LinearLayout.LayoutParams(
-                    Ui.dp(this, 44), Ui.dp(this, 44)));
-        } catch (PackageManager.NameNotFoundException ignored) {
-        }
+        header.addView(buildRuleIcons(rule));
         LinearLayout labels = Ui.column(this, 0);
         labels.setPadding(Ui.dp(this, 12), 0, 0, 0);
         labels.addView(Ui.title(this, rule.appLabel, 19f));
         labels.addView(Ui.text(this,
-                rule.mode == Rule.MODE_DAILY_LIMIT ? "每日使用时长" : "允许使用时段",
+                (rule.group ? "应用组 · " + rule.members.size() + " 个应用 · " : "")
+                        + (rule.mode == Rule.MODE_DAILY_LIMIT
+                        ? "每日使用时长" : "允许使用时段"),
                 12f, Ui.MUTED), Ui.matchWrap(this, 3));
         labels.addView(Ui.text(this, activeWeekdays(rule), 12f, Ui.MUTED),
                 Ui.matchWrap(this, 2));
         header.addView(labels, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        Button pin = Ui.secondaryButton(this, rule.pinned ? "取消置顶" : "置顶");
+        pin.setTextSize(12f);
+        pin.setContentDescription(rule.pinned ? "取消置顶" : "置顶规则");
+        pin.setOnClickListener(view -> {
+            store.setPinned(rule.packageName, !rule.pinned, TrustedTime.now(this));
+            render();
+        });
+        header.addView(pin, new LinearLayout.LayoutParams(
+                Ui.dp(this, 78), Ui.dp(this, 40)));
         card.addView(header);
 
         card.addView(buildStatus(decision, pendingActivation, restrictionActive),
@@ -568,7 +574,49 @@ public final class MainActivity extends Activity {
                     Toast.LENGTH_LONG).show();
             return;
         }
-        startActivity(new Intent(this, AppPickerActivity.class));
+        new AlertDialog.Builder(this)
+                .setTitle("添加限制")
+                .setItems(new String[]{"单个应用", "应用组"}, (dialog, which) -> {
+                    if (which == 0) {
+                        startActivity(new Intent(this, AppPickerActivity.class));
+                    } else {
+                        startActivity(new Intent(this, RuleEditorActivity.class)
+                                .putExtra(RuleEditorActivity.EXTRA_CREATE_GROUP, true));
+                    }
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private View buildRuleIcons(Rule rule) {
+        LinearLayout icons = new LinearLayout(this);
+        icons.setOrientation(LinearLayout.HORIZONTAL);
+        int shown = rule.group ? Math.min(2, rule.members.size()) : 1;
+        for (int i = 0; i < shown; i++) {
+            String packageName = rule.group
+                    ? rule.members.get(i).packageName : rule.packageName;
+            try {
+                ImageView icon = new ImageView(this);
+                icon.setImageDrawable(getPackageManager().getApplicationIcon(packageName));
+                LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                        Ui.dp(this, 38), Ui.dp(this, 38));
+                if (i > 0) {
+                    params.setMarginStart(Ui.dp(this, 4));
+                }
+                icons.addView(icon, params);
+            } catch (PackageManager.NameNotFoundException ignored) {
+            }
+        }
+        if (rule.group && rule.members.size() > 2) {
+            TextView more = Ui.text(this, "+" + (rule.members.size() - 2), 12f, Ui.MUTED);
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT);
+            params.gravity = Gravity.CENTER_VERTICAL;
+            params.setMarginStart(Ui.dp(this, 5));
+            icons.addView(more, params);
+        }
+        return icons;
     }
 
     private void openRule(Rule rule) {

@@ -25,16 +25,20 @@ import android.widget.Toast;
 import com.zealmutex.app.data.DataStore;
 import com.zealmutex.app.data.Rule;
 import com.zealmutex.app.engine.TrustedTime;
+import com.zealmutex.app.engine.UsageTracker;
 import com.zealmutex.app.service.MonitorService;
 
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
+import java.util.UUID;
 
 /** Full editor for one package-owned rule. */
 public final class RuleEditorActivity extends Activity {
+    public static final String EXTRA_CREATE_GROUP = "createGroup";
     private static final int REQUEST_REMINDER_IMAGE = 40;
+    private static final int REQUEST_GROUP_APPS = 41;
     private static final String[] WEEKDAYS = {
             "周一", "周二", "周三", "周四", "周五", "周六", "周日"
     };
@@ -42,6 +46,7 @@ public final class RuleEditorActivity extends Activity {
     private DataStore store;
     private Rule rule;
     private boolean existingRule;
+    private boolean creatingGroup;
     private RadioGroup modeGroup;
     private int dailyRadioId;
     private LinearLayout dailySection;
@@ -59,13 +64,19 @@ public final class RuleEditorActivity extends Activity {
     private String reminderImageUri = "";
     private NumberPicker unlockCount;
     private NumberPicker unlockMinutes;
+    private EditText groupName;
+    private LinearLayout memberList;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        creatingGroup = getIntent().getBooleanExtra(EXTRA_CREATE_GROUP, false);
         String packageName = getIntent().getStringExtra("package");
         String label = getIntent().getStringExtra("label");
-        if (packageName == null || packageName.isEmpty()) {
+        if (creatingGroup) {
+            packageName = "group:" + UUID.randomUUID();
+            label = "";
+        } else if (packageName == null || packageName.isEmpty()) {
             finish();
             return;
         }
@@ -77,8 +88,12 @@ public final class RuleEditorActivity extends Activity {
             rule = new Rule();
             rule.packageName = packageName;
             rule.appLabel = label == null || label.isEmpty() ? packageName : label;
+            rule.group = creatingGroup;
         }
         buildEditor();
+        if (creatingGroup && rule.members.isEmpty()) {
+            memberList.post(this::chooseGroupMembers);
+        }
     }
 
     private void buildEditor() {
@@ -92,15 +107,20 @@ public final class RuleEditorActivity extends Activity {
         LinearLayout header = new LinearLayout(this);
         header.setOrientation(LinearLayout.HORIZONTAL);
         header.setGravity(Gravity.CENTER_VERTICAL);
-        try {
-            ImageView icon = new ImageView(this);
-            icon.setImageDrawable(getPackageManager().getApplicationIcon(rule.packageName));
-            header.addView(icon, new LinearLayout.LayoutParams(Ui.dp(this, 56), Ui.dp(this, 56)));
-        } catch (Exception ignored) {
+        if (!rule.group) {
+            try {
+                ImageView icon = new ImageView(this);
+                icon.setImageDrawable(getPackageManager().getApplicationIcon(rule.packageName));
+                header.addView(icon, new LinearLayout.LayoutParams(
+                        Ui.dp(this, 56), Ui.dp(this, 56)));
+            } catch (Exception ignored) {
+            }
         }
         LinearLayout labels = Ui.column(this, 0);
         labels.setPadding(Ui.dp(this, 14), 0, 0, 0);
-        labels.addView(Ui.title(this, rule.appLabel, 25f));
+        labels.addView(Ui.title(this, rule.group
+                ? (rule.appLabel.startsWith("group:") ? "新应用组" : rule.appLabel)
+                : rule.appLabel, 25f));
         labels.addView(Ui.text(this, rule.packageName, 11f, Ui.MUTED), Ui.matchWrap(this, 4));
         header.addView(labels, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
@@ -142,6 +162,10 @@ public final class RuleEditorActivity extends Activity {
                     Ui.dp(this, 12), Ui.dp(this, 10));
             notice.setBackground(Ui.rounded(this, Ui.WHITE, 10, 0, 0));
             root.addView(notice, Ui.matchWrap(this, 18));
+        }
+
+        if (rule.group) {
+            addGroupSection(root);
         }
 
         root.addView(Ui.title(this, "生效星期", 20f), Ui.matchWrap(this, 28));
@@ -268,12 +292,21 @@ public final class RuleEditorActivity extends Activity {
         extraMessage.setMinLines(2);
         root.addView(extraMessage, Ui.matchWrap(this, 10));
 
-        Button save = Ui.primaryButton(this, existingRule ? "保存设置" : "保存，明天生效");
+        Button save = Ui.primaryButton(this, rule.group
+                ? "保存应用组" : existingRule ? "保存设置" : "保存并立即生效");
         save.setOnClickListener(view -> save());
         root.addView(save, Ui.matchWrap(this, 28));
-        root.addView(Ui.text(this,
-                existingRule ? "提醒、非限制日提醒开关、图片和锁定页文字立即生效；星期、使用限制、时段、临时解锁和删除将在明天 00:00 生效。"
-                        : "首次创建的规则和全部设置将在明天 00:00 生效。",
+        String saveHint;
+        if (rule.group) {
+            saveHint = existingRule
+                    ? "组名、提醒、图片和锁定页文字立即生效；成员、星期、限制、时段和临时解锁将在明天 00:00 生效。"
+                    : "全部是新成员时首次立即生效；包含已归属应用时，整个应用组将在明天 00:00 生效。";
+        } else {
+            saveHint = existingRule
+                    ? "提醒、非限制日提醒开关、图片和锁定页文字立即生效；星期、使用限制、时段、临时解锁和删除将在明天 00:00 生效。"
+                    : "首次创建的规则和全部设置立即生效。";
+        }
+        root.addView(Ui.text(this, saveHint,
                 12f, Ui.MUTED), Ui.matchWrap(this, 14));
 
         modeGroup.setOnCheckedChangeListener((group, checkedId) -> updateModeVisibility());
@@ -288,6 +321,69 @@ public final class RuleEditorActivity extends Activity {
         button.setTextSize(16f);
         button.setPadding(0, Ui.dp(this, 5), 0, Ui.dp(this, 5));
         return button;
+    }
+
+    private void addGroupSection(LinearLayout root) {
+        root.addView(Ui.title(this, "应用组", 20f), Ui.matchWrap(this, 28));
+        LinearLayout card = Ui.card(this);
+        card.addView(Ui.text(this, "组名", 14f, Ui.MUTED));
+        String currentName = rule.appLabel.startsWith("group:") ? "" : rule.appLabel;
+        groupName = input(currentName, "例如：社交应用");
+        groupName.setSingleLine(true);
+        card.addView(groupName, Ui.matchWrap(this, 7));
+        card.addView(Ui.text(this, "组内应用（按选择顺序）", 14f, Ui.MUTED),
+                Ui.matchWrap(this, 14));
+        memberList = Ui.column(this, 0);
+        card.addView(memberList, Ui.matchWrap(this, 7));
+        Button choose = Ui.secondaryButton(this, "选择组内应用");
+        choose.setOnClickListener(view -> chooseGroupMembers());
+        card.addView(choose, Ui.matchWrap(this, 10));
+        root.addView(card);
+        renderMembers();
+    }
+
+    private void renderMembers() {
+        if (memberList == null) {
+            return;
+        }
+        memberList.removeAllViews();
+        if (rule.members.isEmpty()) {
+            memberList.addView(Ui.text(this, "尚未选择应用", 14f, Ui.MUTED));
+            return;
+        }
+        for (int i = 0; i < rule.members.size(); i++) {
+            Rule.AppMember member = rule.members.get(i);
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            try {
+                ImageView icon = new ImageView(this);
+                icon.setImageDrawable(getPackageManager().getApplicationIcon(
+                        member.packageName));
+                row.addView(icon, new LinearLayout.LayoutParams(
+                        Ui.dp(this, 34), Ui.dp(this, 34)));
+            } catch (Exception ignored) {
+            }
+            row.addView(Ui.text(this, (i + 1) + ". " + member.label, 14f, Ui.WHITE),
+                    new LinearLayout.LayoutParams(0,
+                            ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            memberList.addView(row, Ui.matchWrap(this, i == 0 ? 0 : 7));
+        }
+    }
+
+    private void chooseGroupMembers() {
+        ArrayList<String> packages = new ArrayList<>();
+        ArrayList<String> labels = new ArrayList<>();
+        for (Rule.AppMember member : rule.members) {
+            packages.add(member.packageName);
+            labels.add(member.label);
+        }
+        Intent intent = new Intent(this, AppPickerActivity.class)
+                .putExtra(AppPickerActivity.EXTRA_MULTI_SELECT, true)
+                .putExtra(AppPickerActivity.EXTRA_EDITING_RULE_KEY, rule.packageName)
+                .putStringArrayListExtra(AppPickerActivity.EXTRA_SELECTED_PACKAGES, packages)
+                .putStringArrayListExtra(AppPickerActivity.EXTRA_SELECTED_LABELS, labels);
+        startActivityForResult(intent, REQUEST_GROUP_APPS);
     }
 
     private EditText input(String value, String hint) {
@@ -337,6 +433,24 @@ public final class RuleEditorActivity extends Activity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_GROUP_APPS) {
+            if (resultCode == RESULT_OK && data != null) {
+                ArrayList<String> packages = data.getStringArrayListExtra(
+                        AppPickerActivity.EXTRA_SELECTED_PACKAGES);
+                ArrayList<String> labels = data.getStringArrayListExtra(
+                        AppPickerActivity.EXTRA_SELECTED_LABELS);
+                if (packages != null) {
+                    rule.members.clear();
+                    for (int i = 0; i < packages.size(); i++) {
+                        String label = labels != null && i < labels.size()
+                                ? labels.get(i) : packages.get(i);
+                        rule.members.add(new Rule.AppMember(packages.get(i), label));
+                    }
+                    renderMembers();
+                }
+            }
+            return;
+        }
         if (requestCode != REQUEST_REMINDER_IMAGE || resultCode != RESULT_OK
                 || data == null || data.getData() == null) {
             return;
@@ -397,6 +511,28 @@ public final class RuleEditorActivity extends Activity {
     }
 
     private void save() {
+        if (rule.group) {
+            String name = groupName.getText().toString().trim();
+            if (name.isEmpty()) {
+                Toast.makeText(this, "请填写应用组名称", Toast.LENGTH_LONG).show();
+                return;
+            }
+            if (!store.isGroupNameAvailable(name, rule.packageName,
+                    TrustedTime.now(this))) {
+                Toast.makeText(this, "应用组名称不能重复", Toast.LENGTH_LONG).show();
+                return;
+            }
+            if (rule.members.isEmpty()) {
+                Toast.makeText(this, "请至少保留一个组内应用", Toast.LENGTH_LONG).show();
+                return;
+            }
+            if (!existingRule && rule.members.size() < 2) {
+                Toast.makeText(this, "尚未生效的新应用组至少需要两个应用",
+                        Toast.LENGTH_LONG).show();
+                return;
+            }
+            rule.appLabel = name;
+        }
         rule.activeWeekdaysMask = 0;
         for (int day = 0; day < weekdayChecks.length; day++) {
             if (weekdayChecks[day].isChecked()) {
@@ -436,12 +572,59 @@ public final class RuleEditorActivity extends Activity {
                     reminderImageUri));
         }
 
+        if (rule.group && rule.members.size() == 1) {
+            Rule.AppMember member = rule.members.get(0);
+            new AlertDialog.Builder(this)
+                    .setTitle("转为单独规则？")
+                    .setMessage("应用组只剩“" + member.label
+                            + "”。确认保存后，将在明天 00:00 自动转为该应用的单独规则；取消不会修改当前组。")
+                    .setPositiveButton("确认保存", (dialog, which) -> persistRule())
+                    .setNegativeButton("取消", null)
+                    .show();
+            return;
+        }
+        persistRule();
+    }
+
+    private void persistRule() {
         long now = TrustedTime.now(this);
+        if (rule.group) {
+            DataStore.GroupSaveResult saved = store.saveGroupRule(rule, now);
+            if (saved == DataStore.GroupSaveResult.INVALID) {
+                Toast.makeText(this, "应用组保存失败，请检查成员设置",
+                        Toast.LENGTH_LONG).show();
+                return;
+            }
+            MonitorService.start(this);
+            String result;
+            if (saved == DataStore.GroupSaveResult.CREATED_IMMEDIATELY) {
+                for (Rule.AppMember member : rule.members) {
+                    store.seedTodayUsage(rule, member.packageName, member.label,
+                            UsageTracker.measureTodayForegroundMs(
+                                    this, member.packageName, now), now);
+                }
+                result = "应用组已立即生效";
+            } else if (saved == DataStore.GroupSaveResult.UPDATED_IMMEDIATELY) {
+                result = "设置已立即生效";
+            } else if (store.getActiveRule(rule.packageName, now) == null) {
+                result = "应用组将在明天 00:00 生效";
+            } else {
+                result = "组名、提醒和文字已立即生效；成员与限制修改将在明天生效";
+            }
+            Toast.makeText(this, result, Toast.LENGTH_LONG).show();
+            returnToDashboard();
+            return;
+        }
+
         boolean firstRule = store.saveRule(rule, now);
+        if (firstRule) {
+            store.seedTodayUsage(rule,
+                    UsageTracker.measureTodayForegroundMs(this, rule.packageName, now), now);
+        }
         MonitorService.start(this);
         String result;
         if (firstRule) {
-            result = "规则将在明天 00:00 生效";
+            result = "规则已立即生效";
         } else if (store.hasScheduledDelete(rule.packageName, now)) {
             result = "提醒和文字已立即生效；删除仍将在明天生效";
         } else if (!store.pendingDescription(rule.packageName, now).isEmpty()) {
@@ -455,8 +638,10 @@ public final class RuleEditorActivity extends Activity {
 
     private void confirmDelete() {
         new AlertDialog.Builder(this)
-                .setTitle("明天删除规则？")
-                .setMessage("今天仍会继续执行当前限制，明天 00:00 后停止限制。")
+                .setTitle(rule.group ? "明天删除应用组？" : "明天删除规则？")
+                .setMessage(rule.group
+                        ? "今天仍会继续执行当前组限制；明天 00:00 后删除组，成员应用将不再归属任何规则。"
+                        : "今天仍会继续执行当前限制，明天 00:00 后停止限制。")
                 .setPositiveButton("确认", (dialog, which) -> {
                     store.scheduleDelete(rule.packageName, TrustedTime.now(this));
                     Toast.makeText(this, "已安排明天删除", Toast.LENGTH_LONG).show();
