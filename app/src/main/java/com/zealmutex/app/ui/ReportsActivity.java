@@ -23,14 +23,16 @@ public final class ReportsActivity extends Activity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        ThemeManager.applyBeforeCreate(this);
         super.onCreate(savedInstanceState);
+        ThemeManager.applySystemBars(this);
         build();
     }
 
     private void build() {
         ScrollView scroll = new ScrollView(this);
         content = Ui.column(this, 20);
-        content.setBackgroundColor(Ui.BLACK);
+        content.setBackgroundColor(Ui.background(this));
         scroll.addView(content);
         Ui.applyStatusBarInset(scroll);
         setContentView(scroll);
@@ -103,7 +105,7 @@ public final class ReportsActivity extends Activity {
                 }
             }
             Button delete = Ui.secondaryButton(this, "删除这份周报");
-            delete.setTextColor(Ui.DANGER);
+            delete.setTextColor(Ui.color(this, Ui.DANGER));
             delete.setOnClickListener(view -> confirmDelete(reportId));
             card.addView(delete, Ui.matchWrap(this, 14));
             content.addView(card);

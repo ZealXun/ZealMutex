@@ -55,7 +55,9 @@ public final class AppPickerActivity extends Activity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        ThemeManager.applyBeforeCreate(this);
         super.onCreate(savedInstanceState);
+        ThemeManager.applySystemBars(this);
         multiSelect = getIntent().getBooleanExtra(EXTRA_MULTI_SELECT, false);
         editingRuleKey = getIntent().getStringExtra(EXTRA_EDITING_RULE_KEY);
         if (editingRuleKey == null) {
@@ -73,7 +75,7 @@ public final class AppPickerActivity extends Activity {
             }
         }
         LinearLayout root = Ui.column(this, 20);
-        root.setBackgroundColor(Ui.BLACK);
+        root.setBackgroundColor(Ui.background(this));
         root.addView(Ui.title(this, multiSelect ? "选择组内应用" : "选择应用", 28f));
         root.addView(Ui.text(this, multiSelect
                         ? "按选择顺序排列；已归属应用会在明天迁移"
@@ -83,8 +85,8 @@ public final class AppPickerActivity extends Activity {
 
         EditText search = new EditText(this);
         search.setHint("搜索应用名称或包名");
-        search.setHintTextColor(Ui.MUTED);
-        search.setTextColor(Ui.WHITE);
+        search.setHintTextColor(Ui.mutedText(this));
+        search.setTextColor(Ui.primaryText(this));
         search.setSingleLine(true);
         search.setBackground(Ui.rounded(this, Ui.SURFACE, 12, 1, Ui.SURFACE_HIGH));
         search.setPadding(Ui.dp(this, 14), 0, Ui.dp(this, 14), 0);
@@ -94,7 +96,7 @@ public final class AppPickerActivity extends Activity {
         root.addView(progress, Ui.matchWrap(this, 30));
         ListView list = new ListView(this);
         list.setDividerHeight(0);
-        list.setCacheColorHint(Ui.BLACK);
+        list.setCacheColorHint(Ui.background(this));
         adapter = new AppAdapter();
         list.setAdapter(adapter);
         root.addView(list, new LinearLayout.LayoutParams(
