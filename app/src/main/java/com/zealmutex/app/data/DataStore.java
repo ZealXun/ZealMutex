@@ -17,7 +17,9 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -96,6 +98,41 @@ public final class DataStore {
         return result;
     }
 
+    /** Returns active rules plus newly created rules waiting for tomorrow. */
+    public synchronized List<Rule> getRulesForDisplay(long nowMillis) {
+        rollover(nowMillis);
+        List<Rule> result = new ArrayList<>();
+        JSONObject active = object("activeRules");
+        JSONObject pending = object("pending");
+        JSONArray order = array("ruleOrder");
+        for (int i = 0; i < order.length(); i++) {
+            String packageName = order.optString(i);
+            Rule rule = parseRule(active.optJSONObject(packageName));
+            if (rule == null) {
+                JSONObject change = pending.optJSONObject(packageName);
+                if (change != null && !change.optBoolean("delete", false)
+                        && change.optBoolean("visible", true)) {
+                    rule = parseRule(change.optJSONObject("rule"));
+                }
+            }
+            if (rule != null) {
+                result.add(rule);
+            }
+        }
+        List<Rule> ordered = new ArrayList<>();
+        for (Rule rule : result) {
+            if (rule.pinned) {
+                ordered.add(rule);
+            }
+        }
+        for (Rule rule : result) {
+            if (!rule.pinned) {
+                ordered.add(rule);
+            }
+        }
+        return ordered;
+    }
+
     public synchronized Rule getActiveRule(String packageName, long nowMillis) {
         rollover(nowMillis);
         return parseRule(object("activeRules").optJSONObject(packageName));
@@ -114,13 +151,47 @@ public final class DataStore {
         return parseRule(object("activeRules").optJSONObject(packageName));
     }
 
-    /** Saves immediate fields now and queues only limit-related changes for tomorrow. */
+    public synchronized Rule getActiveRuleForPackage(String installedPackage, long nowMillis) {
+        for (Rule rule : getActiveRules(nowMillis)) {
+            if (rule.containsPackage(installedPackage)) {
+                return rule;
+            }
+        }
+        return null;
+    }
+
+    public synchronized Rule getEditableRuleForPackage(String installedPackage, long nowMillis) {
+        for (Rule rule : tomorrowRules(nowMillis)) {
+            if (rule.containsPackage(installedPackage)) {
+                return rule;
+            }
+        }
+        return null;
+    }
+
+    public synchronized boolean isGroupNameAvailable(
+            String name, String excludedRuleKey, long nowMillis) {
+        String normalized = name == null ? "" : name.trim();
+        if (normalized.isEmpty()) {
+            return false;
+        }
+        for (Rule rule : tomorrowRules(nowMillis)) {
+            if (rule.group && !rule.packageName.equals(excludedRuleKey)
+                    && normalized.equalsIgnoreCase(rule.appLabel.trim())) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** Saves a single-app rule now when new, or queues limit-related edits for tomorrow. */
     public synchronized boolean saveRule(Rule rule, long nowMillis) {
         rollover(nowMillis);
         try {
             JSONObject active = object("activeRules");
             if (!active.has(rule.packageName)) {
                 active.put(rule.packageName, rule.toJson());
+                object("pending").remove(rule.packageName);
                 appendRuleOrder(rule.packageName);
                 persistNow();
                 return true;
@@ -157,11 +228,123 @@ public final class DataStore {
         return false;
     }
 
+    public synchronized GroupSaveResult saveGroupRule(Rule desired, long nowMillis) {
+        rollover(nowMillis);
+        if (!desired.group || desired.members.isEmpty()) {
+            return GroupSaveResult.INVALID;
+        }
+        clearGroupTransaction(desired.packageName);
+        clearConflictingGroupTransactions(desired, nowMillis);
+        JSONObject scheduledChange = object("pending").optJSONObject(desired.packageName);
+        boolean deleteScheduled = isExplicitDelete(scheduledChange);
+        Rule activeRule = parseRule(object("activeRules").optJSONObject(desired.packageName));
+        boolean ownedToday = false;
+        for (Rule.AppMember member : desired.members) {
+            Rule owner = getActiveRuleForPackage(member.packageName, nowMillis);
+            if (owner != null && !owner.packageName.equals(desired.packageName)) {
+                ownedToday = true;
+                break;
+            }
+        }
+
+        RuleAssignmentPlanner.Plan plan = RuleAssignmentPlanner.planGroupSave(
+                tomorrowRules(nowMillis), desired);
+        if (activeRule == null && !ownedToday && !plan.migrated
+                && desired.members.size() >= 2) {
+            try {
+                object("activeRules").put(desired.packageName, desired.toJson());
+                object("pending").remove(desired.packageName);
+                appendRuleOrder(desired.packageName);
+                persistNow();
+                return GroupSaveResult.CREATED_IMMEDIATELY;
+            } catch (JSONException ignored) {
+                return GroupSaveResult.INVALID;
+            }
+        }
+
+        if (activeRule != null) {
+            try {
+                activeRule.applyImmediateSettingsFrom(desired);
+                object("activeRules").put(activeRule.packageName, activeRule.toJson());
+            } catch (JSONException ignored) {
+                return GroupSaveResult.INVALID;
+            }
+        }
+
+        if (deleteScheduled) {
+            persistNow();
+            return GroupSaveResult.UPDATED_IMMEDIATELY;
+        }
+
+        boolean affectsOtherRules = plan.migrated || plan.deletions.size() > 1
+                || plan.upserts.size() > 1;
+        if (activeRule != null && activeRule.hasSameDelayedSettings(desired)
+                && !affectsOtherRules) {
+            object("pending").remove(desired.packageName);
+            persistNow();
+            return GroupSaveResult.UPDATED_IMMEDIATELY;
+        }
+
+        LocalDate effectiveDate = date(nowMillis).plusDays(1);
+        for (String key : plan.deletions) {
+            boolean conversion = plan.orderReplacements.containsKey(key);
+            queueDelete(key, effectiveDate, desired.packageName, conversion);
+        }
+        for (Map.Entry<String, Rule> entry : plan.upserts.entrySet()) {
+            String replacementSource = null;
+            for (Map.Entry<String, String> replacement : plan.orderReplacements.entrySet()) {
+                if (replacement.getValue().equals(entry.getKey())) {
+                    replacementSource = replacement.getKey();
+                    break;
+                }
+            }
+            boolean visible = entry.getKey().equals(desired.packageName);
+            queueRule(entry.getValue(), effectiveDate, visible, replacementSource,
+                    desired.packageName);
+        }
+        if (plan.upserts.containsKey(desired.packageName)) {
+            appendRuleOrder(desired.packageName);
+        }
+        persistNow();
+        return GroupSaveResult.SCHEDULED;
+    }
+
+    public enum GroupSaveResult {
+        CREATED_IMMEDIATELY,
+        UPDATED_IMMEDIATELY,
+        SCHEDULED,
+        INVALID
+    }
+
+    public synchronized void setPinned(String ruleKey, boolean pinned, long nowMillis) {
+        rollover(nowMillis);
+        JSONObject active = object("activeRules");
+        Rule activeRule = parseRule(active.optJSONObject(ruleKey));
+        try {
+            if (activeRule != null) {
+                activeRule.pinned = pinned;
+                active.put(ruleKey, activeRule.toJson());
+            }
+            JSONObject change = object("pending").optJSONObject(ruleKey);
+            if (change != null && !change.optBoolean("delete", false)) {
+                Rule pendingRule = parseRule(change.optJSONObject("rule"));
+                if (pendingRule != null) {
+                    pendingRule.pinned = pinned;
+                    change.put("rule", pendingRule.toJson());
+                }
+            }
+            persistNow();
+        } catch (JSONException ignored) {
+        }
+    }
+
     public synchronized void scheduleDelete(String packageName, long nowMillis) {
         rollover(nowMillis);
         if (!object("activeRules").has(packageName)) {
             return;
         }
+        clearTransactionAffectingRule(packageName);
+        clearGroupTransaction(packageName);
         try {
             object("pending").put(packageName, new JSONObject()
                     .put("effectiveDate", date(nowMillis).plusDays(1).toString())
@@ -174,13 +357,13 @@ public final class DataStore {
     public synchronized boolean hasScheduledDelete(String packageName, long nowMillis) {
         rollover(nowMillis);
         JSONObject pending = object("pending").optJSONObject(packageName);
-        return pending != null && pending.optBoolean("delete", false);
+        return isExplicitDelete(pending);
     }
 
     public synchronized void cancelScheduledDelete(String packageName, long nowMillis) {
         rollover(nowMillis);
         JSONObject pending = object("pending").optJSONObject(packageName);
-        if (pending != null && pending.optBoolean("delete", false)) {
+        if (isExplicitDelete(pending)) {
             object("pending").remove(packageName);
             persistNow();
         }
@@ -192,7 +375,19 @@ public final class DataStore {
         if (pending == null) {
             return "";
         }
-        String action = pending.optBoolean("delete", false) ? "删除" : "限制修改";
+        String action;
+        String changeType = pending.optString("changeType", "");
+        if ("conversion".equals(changeType)) {
+            action = "应用组转为单独规则";
+        } else if ("migration".equals(changeType)) {
+            action = "成员迁移";
+        } else if (pending.optBoolean("delete", false)) {
+            action = "删除";
+        } else if (object("activeRules").has(packageName)) {
+            action = "限制修改";
+        } else {
+            action = "新规则";
+        }
         return action + "将在 " + pending.optString("effectiveDate", "明天") + " 生效";
     }
 
@@ -201,21 +396,52 @@ public final class DataStore {
         return todayApp(packageName, "", null, nowMillis).optLong("usedMs", 0L);
     }
 
+    public synchronized long getTodayUsageMs(Rule rule, long nowMillis) {
+        rollover(nowMillis);
+        return todayApp(rule.packageName, rule.appLabel, rule, nowMillis)
+                .optLong("usedMs", 0L);
+    }
+
     /** Never lowers the counter, so package reinstall and service restarts are safe. */
     public synchronized void seedTodayUsage(Rule rule, long measuredMs, long nowMillis) {
+        if (rule.group) {
+            return;
+        }
+        seedTodayUsage(rule, rule.packageName, rule.appLabel, measuredMs, nowMillis);
+    }
+
+    /** Seeds one installed member while preserving the group's aggregate counter. */
+    public synchronized void seedTodayUsage(
+            Rule rule, String installedPackage, String installedLabel,
+            long measuredMs, long nowMillis) {
         rollover(nowMillis);
         JSONObject stats = todayApp(rule.packageName, rule.appLabel, rule, nowMillis);
-        if (measuredMs > stats.optLong("usedMs", 0L)) {
-            try {
+        try {
+            if (rule.group) {
+                JSONObject member = todayMember(stats, installedPackage, installedLabel);
+                long previous = member.optLong("usedMs", 0L);
+                if (measuredMs > previous) {
+                    member.put("usedMs", measuredMs);
+                    stats.put("usedMs", stats.optLong("usedMs", 0L) + measuredMs - previous);
+                    persistLazily();
+                }
+            } else if (measuredMs > stats.optLong("usedMs", 0L)) {
                 stats.put("usedMs", measuredMs);
                 persistLazily();
-            } catch (JSONException ignored) {
             }
+        } catch (JSONException ignored) {
         }
     }
 
     public synchronized void addUsageInterval(
             Rule rule, long startMillis, long endMillis) {
+        addUsageInterval(rule, rule.packageName, rule.appLabel, startMillis, endMillis);
+    }
+
+    /** Adds one foreground interval to both the owner rule and its member breakdown. */
+    public synchronized void addUsageInterval(
+            Rule rule, String installedPackage, String installedLabel,
+            long startMillis, long endMillis) {
         long totalMs = endMillis - startMillis;
         if (totalMs <= 0L || totalMs > 60_000L) {
             return;
@@ -234,7 +460,12 @@ public final class DataStore {
             rollover(cursor);
             JSONObject stats = todayApp(rule.packageName, rule.appLabel, rule, cursor);
             try {
-                stats.put("usedMs", stats.optLong("usedMs", 0L) + partEnd - cursor);
+                long delta = partEnd - cursor;
+                stats.put("usedMs", stats.optLong("usedMs", 0L) + delta);
+                if (rule.group) {
+                    JSONObject member = todayMember(stats, installedPackage, installedLabel);
+                    member.put("usedMs", member.optLong("usedMs", 0L) + delta);
+                }
             } catch (JSONException ignored) {
             }
             cursor = partEnd;
@@ -381,6 +612,26 @@ public final class DataStore {
             if (effective == null || effective.isAfter(today)) {
                 continue;
             }
+            String replacement = change.optString("replaceOrderKey", "");
+            if (!replacement.isEmpty()) {
+                replaceRuleOrder(replacement, packageName);
+            }
+        }
+
+        keys = pending.keys();
+        while (keys.hasNext()) {
+            String packageName = keys.next();
+            JSONObject change = pending.optJSONObject(packageName);
+            if (change == null) {
+                if (!applied.contains(packageName)) {
+                    applied.add(packageName);
+                }
+                continue;
+            }
+            LocalDate effective = parseDate(change.optString("effectiveDate"));
+            if (effective == null || effective.isAfter(today)) {
+                continue;
+            }
             if (change.optBoolean("delete", false)) {
                 active.remove(packageName);
                 removeRuleOrder(packageName);
@@ -389,6 +640,7 @@ public final class DataStore {
                 if (rule != null) {
                     try {
                         active.put(packageName, rule);
+                        appendRuleOrder(packageName);
                     } catch (JSONException ignored) {
                     }
                 }
@@ -399,6 +651,119 @@ public final class DataStore {
             pending.remove(packageName);
         }
         return !applied.isEmpty();
+    }
+
+    private List<Rule> tomorrowRules(long nowMillis) {
+        rollover(nowMillis);
+        Map<String, Rule> byKey = new LinkedHashMap<>();
+        for (Rule rule : getActiveRules(nowMillis)) {
+            byKey.put(rule.packageName, rule);
+        }
+        JSONObject pending = object("pending");
+        Iterator<String> keys = pending.keys();
+        while (keys.hasNext()) {
+            String key = keys.next();
+            JSONObject change = pending.optJSONObject(key);
+            if (change == null) {
+                continue;
+            }
+            if (change.optBoolean("delete", false)) {
+                byKey.remove(key);
+            } else {
+                Rule rule = parseRule(change.optJSONObject("rule"));
+                if (rule != null) {
+                    byKey.put(key, rule);
+                }
+            }
+        }
+        return new ArrayList<>(byKey.values());
+    }
+
+    private void clearGroupTransaction(String owner) {
+        JSONObject pending = object("pending");
+        List<String> removed = new ArrayList<>();
+        Iterator<String> keys = pending.keys();
+        while (keys.hasNext()) {
+            String key = keys.next();
+            JSONObject change = pending.optJSONObject(key);
+            if (change != null && owner.equals(change.optString("transactionOwner"))) {
+                removed.add(key);
+            }
+        }
+        for (String key : removed) {
+            JSONObject change = pending.optJSONObject(key);
+            if (change != null && change.optBoolean("visible", false)
+                    && !object("activeRules").has(key)) {
+                removeRuleOrder(key);
+            }
+            pending.remove(key);
+        }
+    }
+
+    private void clearConflictingGroupTransactions(Rule desired, long nowMillis) {
+        boolean cleared;
+        do {
+            cleared = false;
+            List<Rule> future = tomorrowRules(nowMillis);
+            for (Rule.AppMember member : desired.members) {
+                Rule owner = null;
+                for (Rule candidate : future) {
+                    if (candidate.containsPackage(member.packageName)) {
+                        owner = candidate;
+                        break;
+                    }
+                }
+                if (owner == null || owner.packageName.equals(desired.packageName)) {
+                    continue;
+                }
+                JSONObject change = object("pending").optJSONObject(owner.packageName);
+                String transactionOwner = change == null
+                        ? "" : change.optString("transactionOwner", "");
+                if (!transactionOwner.isEmpty()) {
+                    clearGroupTransaction(transactionOwner);
+                    cleared = true;
+                    break;
+                }
+            }
+        } while (cleared);
+    }
+
+    private void clearTransactionAffectingRule(String ruleKey) {
+        JSONObject change = object("pending").optJSONObject(ruleKey);
+        String transactionOwner = change == null
+                ? "" : change.optString("transactionOwner", "");
+        if (!transactionOwner.isEmpty()) {
+            clearGroupTransaction(transactionOwner);
+        }
+    }
+
+    private void queueRule(Rule rule, LocalDate effectiveDate, boolean visible,
+                           String replaceOrderKey, String transactionOwner) {
+        try {
+            JSONObject change = new JSONObject()
+                    .put("effectiveDate", effectiveDate.toString())
+                    .put("delete", false)
+                    .put("visible", visible)
+                    .put("transactionOwner", transactionOwner)
+                    .put("rule", rule.toJson());
+            if (replaceOrderKey != null && !replaceOrderKey.isEmpty()) {
+                change.put("replaceOrderKey", replaceOrderKey);
+            }
+            object("pending").put(rule.packageName, change);
+        } catch (JSONException ignored) {
+        }
+    }
+
+    private void queueDelete(String ruleKey, LocalDate effectiveDate,
+                             String transactionOwner, boolean conversion) {
+        try {
+            object("pending").put(ruleKey, new JSONObject()
+                    .put("effectiveDate", effectiveDate.toString())
+                    .put("delete", true)
+                    .put("changeType", conversion ? "conversion" : "migration")
+                    .put("transactionOwner", transactionOwner));
+        } catch (JSONException ignored) {
+        }
     }
 
     private boolean generateClosedWeekReports(LocalDate today, long nowMillis) {
@@ -458,6 +823,11 @@ public final class DataStore {
                         target.put("overMs", 0L);
                         target.put("temporaryUnlockCount", 0);
                         target.put("days", 0);
+                        target.put("group", source.optBoolean("group", false));
+                        JSONArray memberOrder = source.optJSONArray("memberOrder");
+                        target.put("memberOrder", copyArray(memberOrder == null
+                                ? new JSONArray() : memberOrder));
+                        target.put("members", new JSONObject());
                         aggregate.put(packageName, target);
                     } catch (JSONException ignored) {
                     }
@@ -475,6 +845,7 @@ public final class DataStore {
                             target.optInt("temporaryUnlockCount", 0)
                                     + source.optInt("temporaryUnlockCount", 0));
                     target.put("days", target.optInt("days", 0) + 1);
+                    mergeMemberUsage(target, source);
                 } catch (JSONException ignored) {
                 }
             }
@@ -550,6 +921,16 @@ public final class DataStore {
                 stats.put("firedReminders", new JSONArray());
                 stats.put("mode", rule == null ? Rule.MODE_DAILY_LIMIT : rule.mode);
                 stats.put("limitMinutes", rule == null ? 0 : rule.dailyLimitMinutes);
+                stats.put("group", rule != null && rule.group);
+                stats.put("memberOrder", new JSONArray());
+                stats.put("members", new JSONObject());
+                if (rule != null && rule.group) {
+                    JSONArray order = stats.getJSONArray("memberOrder");
+                    for (Rule.AppMember member : rule.members) {
+                        order.put(member.packageName);
+                        todayMember(stats, member.packageName, member.label);
+                    }
+                }
                 apps.put(packageName, stats);
             } catch (JSONException ignored) {
             }
@@ -558,6 +939,18 @@ public final class DataStore {
                 stats.put("label", rule.appLabel);
                 stats.put("mode", rule.mode);
                 stats.put("limitMinutes", rule.dailyLimitMinutes);
+                stats.put("group", rule.group);
+                if (rule.group) {
+                    JSONArray order = stats.optJSONArray("memberOrder");
+                    if (order == null || order.length() == 0) {
+                        order = new JSONArray();
+                        for (Rule.AppMember member : rule.members) {
+                            order.put(member.packageName);
+                            todayMember(stats, member.packageName, member.label);
+                        }
+                        stats.put("memberOrder", order);
+                    }
+                }
             } catch (JSONException ignored) {
             }
         }
@@ -641,6 +1034,90 @@ public final class DataStore {
             }
         }
         put("ruleOrder", kept);
+    }
+
+    private void replaceRuleOrder(String sourceKey, String targetKey) {
+        JSONArray order = array("ruleOrder");
+        JSONArray replaced = new JSONArray();
+        Set<String> added = new HashSet<>();
+        boolean foundSource = false;
+        for (int i = 0; i < order.length(); i++) {
+            String current = order.optString(i);
+            if (sourceKey.equals(current)) {
+                current = targetKey;
+                foundSource = true;
+            }
+            if (!current.isEmpty() && added.add(current)) {
+                replaced.put(current);
+            }
+        }
+        if (!foundSource && added.add(targetKey)) {
+            replaced.put(targetKey);
+        }
+        put("ruleOrder", replaced);
+    }
+
+    private static boolean isExplicitDelete(JSONObject change) {
+        return change != null
+                && change.optBoolean("delete", false)
+                && change.optString("transactionOwner", "").isEmpty();
+    }
+
+    private JSONObject todayMember(JSONObject stats, String packageName, String label)
+            throws JSONException {
+        JSONObject members = stats.optJSONObject("members");
+        if (members == null) {
+            members = new JSONObject();
+            stats.put("members", members);
+        }
+        JSONObject member = members.optJSONObject(packageName);
+        if (member == null) {
+            member = new JSONObject()
+                    .put("label", label == null || label.isEmpty() ? packageName : label)
+                    .put("usedMs", 0L);
+            members.put(packageName, member);
+        }
+        return member;
+    }
+
+    private static void mergeMemberUsage(JSONObject target, JSONObject source)
+            throws JSONException {
+        JSONObject sourceMembers = source.optJSONObject("members");
+        JSONObject targetMembers = target.optJSONObject("members");
+        if (sourceMembers == null || targetMembers == null) {
+            return;
+        }
+        JSONArray targetOrder = target.optJSONArray("memberOrder");
+        JSONArray sourceOrder = source.optJSONArray("memberOrder");
+        if (targetOrder != null && sourceOrder != null) {
+            Set<String> ordered = new HashSet<>();
+            for (int i = 0; i < targetOrder.length(); i++) {
+                ordered.add(targetOrder.optString(i));
+            }
+            for (int i = 0; i < sourceOrder.length(); i++) {
+                String packageName = sourceOrder.optString(i);
+                if (!packageName.isEmpty() && ordered.add(packageName)) {
+                    targetOrder.put(packageName);
+                }
+            }
+        }
+        Iterator<String> keys = sourceMembers.keys();
+        while (keys.hasNext()) {
+            String packageName = keys.next();
+            JSONObject sourceMember = sourceMembers.optJSONObject(packageName);
+            if (sourceMember == null) {
+                continue;
+            }
+            JSONObject targetMember = targetMembers.optJSONObject(packageName);
+            if (targetMember == null) {
+                targetMember = new JSONObject()
+                        .put("label", sourceMember.optString("label", packageName))
+                        .put("usedMs", 0L);
+                targetMembers.put(packageName, targetMember);
+            }
+            targetMember.put("usedMs", targetMember.optLong("usedMs", 0L)
+                    + sourceMember.optLong("usedMs", 0L));
+        }
     }
 
     private JSONObject object(String key) {

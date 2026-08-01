@@ -10,6 +10,7 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
+import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.ImageButton;
@@ -31,10 +32,13 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
+import java.util.UUID;
 
 /** Full editor for one package-owned rule. */
 public final class RuleEditorActivity extends Activity {
+    public static final String EXTRA_CREATE_GROUP = "createGroup";
     private static final int REQUEST_REMINDER_IMAGE = 40;
+    private static final int REQUEST_GROUP_APPS = 41;
     private static final String[] WEEKDAYS = {
             "周一", "周二", "周三", "周四", "周五", "周六", "周日"
     };
@@ -42,11 +46,14 @@ public final class RuleEditorActivity extends Activity {
     private DataStore store;
     private Rule rule;
     private boolean existingRule;
+    private boolean creatingGroup;
     private RadioGroup modeGroup;
     private int dailyRadioId;
     private LinearLayout dailySection;
     private LinearLayout windowSection;
     private LinearLayout windowList;
+    private final CheckBox[] weekdayChecks = new CheckBox[7];
+    private CheckBox remindOnInactiveDays;
     private EditText dailyMinutes;
     private EditText extraMessage;
     private EditText reminderInterval;
@@ -57,13 +64,21 @@ public final class RuleEditorActivity extends Activity {
     private String reminderImageUri = "";
     private NumberPicker unlockCount;
     private NumberPicker unlockMinutes;
+    private EditText groupName;
+    private LinearLayout memberList;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        ThemeManager.applyBeforeCreate(this);
         super.onCreate(savedInstanceState);
+        ThemeManager.applySystemBars(this);
+        creatingGroup = getIntent().getBooleanExtra(EXTRA_CREATE_GROUP, false);
         String packageName = getIntent().getStringExtra("package");
         String label = getIntent().getStringExtra("label");
-        if (packageName == null || packageName.isEmpty()) {
+        if (creatingGroup) {
+            packageName = "group:" + UUID.randomUUID();
+            label = "";
+        } else if (packageName == null || packageName.isEmpty()) {
             finish();
             return;
         }
@@ -75,14 +90,18 @@ public final class RuleEditorActivity extends Activity {
             rule = new Rule();
             rule.packageName = packageName;
             rule.appLabel = label == null || label.isEmpty() ? packageName : label;
+            rule.group = creatingGroup;
         }
         buildEditor();
+        if (creatingGroup && rule.members.isEmpty()) {
+            memberList.post(this::chooseGroupMembers);
+        }
     }
 
     private void buildEditor() {
         ScrollView scroll = new ScrollView(this);
         LinearLayout root = Ui.column(this, 20);
-        root.setBackgroundColor(Ui.BLACK);
+        root.setBackgroundColor(Ui.background(this));
         scroll.addView(root);
         Ui.applyStatusBarInset(scroll);
         setContentView(scroll);
@@ -90,15 +109,20 @@ public final class RuleEditorActivity extends Activity {
         LinearLayout header = new LinearLayout(this);
         header.setOrientation(LinearLayout.HORIZONTAL);
         header.setGravity(Gravity.CENTER_VERTICAL);
-        try {
-            ImageView icon = new ImageView(this);
-            icon.setImageDrawable(getPackageManager().getApplicationIcon(rule.packageName));
-            header.addView(icon, new LinearLayout.LayoutParams(Ui.dp(this, 56), Ui.dp(this, 56)));
-        } catch (Exception ignored) {
+        if (!rule.group) {
+            try {
+                ImageView icon = new ImageView(this);
+                icon.setImageDrawable(getPackageManager().getApplicationIcon(rule.packageName));
+                header.addView(icon, new LinearLayout.LayoutParams(
+                        Ui.dp(this, 56), Ui.dp(this, 56)));
+            } catch (Exception ignored) {
+            }
         }
         LinearLayout labels = Ui.column(this, 0);
         labels.setPadding(Ui.dp(this, 14), 0, 0, 0);
-        labels.addView(Ui.title(this, rule.appLabel, 25f));
+        labels.addView(Ui.title(this, rule.group
+                ? (rule.appLabel.startsWith("group:") ? "新应用组" : rule.appLabel)
+                : rule.appLabel, 25f));
         labels.addView(Ui.text(this, rule.packageName, 11f, Ui.MUTED), Ui.matchWrap(this, 4));
         header.addView(labels, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
@@ -109,7 +133,8 @@ public final class RuleEditorActivity extends Activity {
             deleteAction.setImageResource(scheduledDelete
                     ? com.zealmutex.app.R.drawable.ic_undo
                     : com.zealmutex.app.R.drawable.ic_delete);
-            deleteAction.setColorFilter(scheduledDelete ? Ui.BLUE : Ui.DANGER);
+            deleteAction.setColorFilter(Ui.color(
+                    this, scheduledDelete ? Ui.BLUE : Ui.DANGER));
             deleteAction.setContentDescription(scheduledDelete
                     ? "撤销删除" : "删除规则");
             deleteAction.setBackground(Ui.rounded(
@@ -134,12 +159,41 @@ public final class RuleEditorActivity extends Activity {
 
         String pending = store.pendingDescription(rule.packageName, TrustedTime.now(this));
         if (!pending.isEmpty()) {
-            TextView notice = Ui.text(this, pending + "；今天仍执行当前限制。", 13f, Ui.BLACK);
+            String detail = existingRule ? "；今天仍执行当前限制。" : "；生效前不会限制。";
+            TextView notice = Ui.text(this, pending + detail, 13f, Ui.BLACK);
             notice.setPadding(Ui.dp(this, 12), Ui.dp(this, 10),
                     Ui.dp(this, 12), Ui.dp(this, 10));
             notice.setBackground(Ui.rounded(this, Ui.WHITE, 10, 0, 0));
             root.addView(notice, Ui.matchWrap(this, 18));
         }
+
+        if (rule.group) {
+            addGroupSection(root);
+        }
+
+        root.addView(Ui.title(this, "生效星期", 20f), Ui.matchWrap(this, 28));
+        LinearLayout weekdayCard = Ui.card(this);
+        weekdayCard.addView(Ui.text(this,
+                "选中的日期执行限制；未选日期仍统计使用时长。",
+                13f, Ui.MUTED));
+        for (int rowIndex = 0; rowIndex < 2; rowIndex++) {
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            int start = rowIndex == 0 ? 0 : 4;
+            int end = rowIndex == 0 ? 4 : 7;
+            for (int day = start; day < end; day++) {
+                CheckBox check = new CheckBox(this);
+                check.setText(WEEKDAYS[day]);
+                check.setTextColor(Ui.primaryText(this));
+                check.setTextSize(14f);
+                check.setChecked(rule.isActiveOnDay(day + 1));
+                weekdayChecks[day] = check;
+                row.addView(check, new LinearLayout.LayoutParams(
+                        0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            }
+            weekdayCard.addView(row, Ui.matchWrap(this, rowIndex == 0 ? 10 : 2));
+        }
+        root.addView(weekdayCard);
 
         root.addView(Ui.title(this, "限制模式", 20f), Ui.matchWrap(this, 28));
         modeGroup = new RadioGroup(this);
@@ -163,7 +217,7 @@ public final class RuleEditorActivity extends Activity {
 
         windowSection = Ui.card(this);
         windowSection.addView(Ui.text(this,
-                "可为不同星期添加多个时段；结束时间必须晚于开始时间。",
+                "可添加多个共用时段；所有选中的星期使用相同时段。",
                 13f, Ui.MUTED));
         windowList = Ui.column(this, 0);
         windowSection.addView(windowList, Ui.matchWrap(this, 10));
@@ -179,6 +233,12 @@ public final class RuleEditorActivity extends Activity {
         reminderCard.addView(Ui.text(this,
                 "按当天累计使用时间循环提醒；留空表示关闭提醒。",
                 13f, Ui.MUTED));
+        remindOnInactiveDays = new CheckBox(this);
+        remindOnInactiveDays.setText("非限制日仍继续提醒");
+        remindOnInactiveDays.setTextColor(Ui.primaryText(this));
+        remindOnInactiveDays.setTextSize(14f);
+        remindOnInactiveDays.setChecked(rule.remindOnInactiveDays);
+        reminderCard.addView(remindOnInactiveDays, Ui.matchWrap(this, 8));
         reminderCard.addView(Ui.text(this, "每使用多少分钟提醒一次（1～1440）",
                 14f, Ui.MUTED), Ui.matchWrap(this, 12));
         reminderInterval = input(currentReminder == null ? ""
@@ -235,12 +295,21 @@ public final class RuleEditorActivity extends Activity {
         extraMessage.setMinLines(2);
         root.addView(extraMessage, Ui.matchWrap(this, 10));
 
-        Button save = Ui.primaryButton(this, existingRule ? "保存设置" : "保存并立即生效");
+        Button save = Ui.primaryButton(this, rule.group
+                ? "保存应用组" : existingRule ? "保存设置" : "保存并立即生效");
         save.setOnClickListener(view -> save());
         root.addView(save, Ui.matchWrap(this, 28));
-        root.addView(Ui.text(this,
-                existingRule ? "提醒、图片和锁定页文字保存后立即生效；使用限制、时段、临时解锁和删除将在明天 00:00 生效。"
-                        : "首次创建的规则会从今天立即开始，并计入创建前已经使用的时间。",
+        String saveHint;
+        if (rule.group) {
+            saveHint = existingRule
+                    ? "组名、提醒、图片和锁定页文字立即生效；成员、星期、限制、时段和临时解锁将在明天 00:00 生效。"
+                    : "全部是新成员时首次立即生效；包含已归属应用时，整个应用组将在明天 00:00 生效。";
+        } else {
+            saveHint = existingRule
+                    ? "提醒、非限制日提醒开关、图片和锁定页文字立即生效；星期、使用限制、时段、临时解锁和删除将在明天 00:00 生效。"
+                    : "首次创建的规则和全部设置立即生效。";
+        }
+        root.addView(Ui.text(this, saveHint,
                 12f, Ui.MUTED), Ui.matchWrap(this, 14));
 
         modeGroup.setOnCheckedChangeListener((group, checkedId) -> updateModeVisibility());
@@ -251,18 +320,81 @@ public final class RuleEditorActivity extends Activity {
     private RadioButton radio(String text) {
         RadioButton button = new RadioButton(this);
         button.setText(text);
-        button.setTextColor(Ui.WHITE);
+        button.setTextColor(Ui.primaryText(this));
         button.setTextSize(16f);
         button.setPadding(0, Ui.dp(this, 5), 0, Ui.dp(this, 5));
         return button;
+    }
+
+    private void addGroupSection(LinearLayout root) {
+        root.addView(Ui.title(this, "应用组", 20f), Ui.matchWrap(this, 28));
+        LinearLayout card = Ui.card(this);
+        card.addView(Ui.text(this, "组名", 14f, Ui.MUTED));
+        String currentName = rule.appLabel.startsWith("group:") ? "" : rule.appLabel;
+        groupName = input(currentName, "例如：社交应用");
+        groupName.setSingleLine(true);
+        card.addView(groupName, Ui.matchWrap(this, 7));
+        card.addView(Ui.text(this, "组内应用（按选择顺序）", 14f, Ui.MUTED),
+                Ui.matchWrap(this, 14));
+        memberList = Ui.column(this, 0);
+        card.addView(memberList, Ui.matchWrap(this, 7));
+        Button choose = Ui.secondaryButton(this, "选择组内应用");
+        choose.setOnClickListener(view -> chooseGroupMembers());
+        card.addView(choose, Ui.matchWrap(this, 10));
+        root.addView(card);
+        renderMembers();
+    }
+
+    private void renderMembers() {
+        if (memberList == null) {
+            return;
+        }
+        memberList.removeAllViews();
+        if (rule.members.isEmpty()) {
+            memberList.addView(Ui.text(this, "尚未选择应用", 14f, Ui.MUTED));
+            return;
+        }
+        for (int i = 0; i < rule.members.size(); i++) {
+            Rule.AppMember member = rule.members.get(i);
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            try {
+                ImageView icon = new ImageView(this);
+                icon.setImageDrawable(getPackageManager().getApplicationIcon(
+                        member.packageName));
+                row.addView(icon, new LinearLayout.LayoutParams(
+                        Ui.dp(this, 34), Ui.dp(this, 34)));
+            } catch (Exception ignored) {
+            }
+            row.addView(Ui.text(this, (i + 1) + ". " + member.label, 14f, Ui.WHITE),
+                    new LinearLayout.LayoutParams(0,
+                            ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            memberList.addView(row, Ui.matchWrap(this, i == 0 ? 0 : 7));
+        }
+    }
+
+    private void chooseGroupMembers() {
+        ArrayList<String> packages = new ArrayList<>();
+        ArrayList<String> labels = new ArrayList<>();
+        for (Rule.AppMember member : rule.members) {
+            packages.add(member.packageName);
+            labels.add(member.label);
+        }
+        Intent intent = new Intent(this, AppPickerActivity.class)
+                .putExtra(AppPickerActivity.EXTRA_MULTI_SELECT, true)
+                .putExtra(AppPickerActivity.EXTRA_EDITING_RULE_KEY, rule.packageName)
+                .putStringArrayListExtra(AppPickerActivity.EXTRA_SELECTED_PACKAGES, packages)
+                .putStringArrayListExtra(AppPickerActivity.EXTRA_SELECTED_LABELS, labels);
+        startActivityForResult(intent, REQUEST_GROUP_APPS);
     }
 
     private EditText input(String value, String hint) {
         EditText edit = new EditText(this);
         edit.setText(value);
         edit.setHint(hint);
-        edit.setTextColor(Ui.WHITE);
-        edit.setHintTextColor(Ui.MUTED);
+        edit.setTextColor(Ui.primaryText(this));
+        edit.setHintTextColor(Ui.mutedText(this));
         edit.setBackground(Ui.rounded(this, Ui.SURFACE, 10, 1, Ui.SURFACE_HIGH));
         edit.setPadding(Ui.dp(this, 12), Ui.dp(this, 10),
                 Ui.dp(this, 12), Ui.dp(this, 10));
@@ -304,6 +436,24 @@ public final class RuleEditorActivity extends Activity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_GROUP_APPS) {
+            if (resultCode == RESULT_OK && data != null) {
+                ArrayList<String> packages = data.getStringArrayListExtra(
+                        AppPickerActivity.EXTRA_SELECTED_PACKAGES);
+                ArrayList<String> labels = data.getStringArrayListExtra(
+                        AppPickerActivity.EXTRA_SELECTED_LABELS);
+                if (packages != null) {
+                    rule.members.clear();
+                    for (int i = 0; i < packages.size(); i++) {
+                        String label = labels != null && i < labels.size()
+                                ? labels.get(i) : packages.get(i);
+                        rule.members.add(new Rule.AppMember(packages.get(i), label));
+                    }
+                    renderMembers();
+                }
+            }
+            return;
+        }
         if (requestCode != REQUEST_REMINDER_IMAGE || resultCode != RESULT_OK
                 || data == null || data.getData() == null) {
             return;
@@ -319,27 +469,10 @@ public final class RuleEditorActivity extends Activity {
     }
 
     private void beginAddWindow() {
-        boolean[] selected = new boolean[7];
-        new AlertDialog.Builder(this)
-                .setTitle("选择星期")
-                .setMultiChoiceItems(WEEKDAYS, selected,
-                        (dialog, which, checked) -> selected[which] = checked)
-                .setPositiveButton("下一步", (dialog, which) -> {
-                    boolean any = false;
-                    for (boolean value : selected) {
-                        any |= value;
-                    }
-                    if (!any) {
-                        Toast.makeText(this, "至少选择一天", Toast.LENGTH_SHORT).show();
-                        return;
-                    }
-                    chooseStartTime(selected);
-                })
-                .setNegativeButton("取消", null)
-                .show();
+        chooseStartTime();
     }
 
-    private void chooseStartTime(boolean[] selectedDays) {
+    private void chooseStartTime() {
         new TimePickerDialog(this, (picker, hour, minute) -> {
             int start = hour * 60 + minute;
             new TimePickerDialog(this, (endPicker, endHour, endMinute) -> {
@@ -349,11 +482,7 @@ public final class RuleEditorActivity extends Activity {
                             Toast.LENGTH_LONG).show();
                     return;
                 }
-                for (int i = 0; i < selectedDays.length; i++) {
-                    if (selectedDays[i]) {
-                        rule.windows.add(new Rule.TimeWindow(i + 1, start, end));
-                    }
-                }
+                rule.windows.add(new Rule.TimeWindow(start, end));
                 renderWindows();
             }, Math.min(23, hour + 1), minute, true).show();
         }, 18, 0, true).show();
@@ -361,10 +490,8 @@ public final class RuleEditorActivity extends Activity {
 
     private void renderWindows() {
         windowList.removeAllViews();
-        Collections.sort(rule.windows, (left, right) -> {
-            int day = Integer.compare(left.dayOfWeek, right.dayOfWeek);
-            return day != 0 ? day : Integer.compare(left.startMinute, right.startMinute);
-        });
+        Collections.sort(rule.windows,
+                (left, right) -> Integer.compare(left.startMinute, right.startMinute));
         if (rule.windows.isEmpty()) {
             windowList.addView(Ui.text(this, "尚未添加时段", 14f, Ui.MUTED));
             return;
@@ -373,8 +500,7 @@ public final class RuleEditorActivity extends Activity {
         for (Rule.TimeWindow window : snapshot) {
             LinearLayout row = new LinearLayout(this);
             row.setGravity(Gravity.CENTER_VERTICAL);
-            String value = WEEKDAYS[window.dayOfWeek - 1] + "  "
-                    + clock(window.startMinute) + "–" + clock(window.endMinute);
+            String value = clock(window.startMinute) + "–" + clock(window.endMinute);
             row.addView(Ui.text(this, value, 15f, Ui.WHITE),
                     new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
             Button remove = Ui.secondaryButton(this, "删除");
@@ -388,6 +514,38 @@ public final class RuleEditorActivity extends Activity {
     }
 
     private void save() {
+        if (rule.group) {
+            String name = groupName.getText().toString().trim();
+            if (name.isEmpty()) {
+                Toast.makeText(this, "请填写应用组名称", Toast.LENGTH_LONG).show();
+                return;
+            }
+            if (!store.isGroupNameAvailable(name, rule.packageName,
+                    TrustedTime.now(this))) {
+                Toast.makeText(this, "应用组名称不能重复", Toast.LENGTH_LONG).show();
+                return;
+            }
+            if (rule.members.isEmpty()) {
+                Toast.makeText(this, "请至少保留一个组内应用", Toast.LENGTH_LONG).show();
+                return;
+            }
+            if (!existingRule && rule.members.size() < 2) {
+                Toast.makeText(this, "尚未生效的新应用组至少需要两个应用",
+                        Toast.LENGTH_LONG).show();
+                return;
+            }
+            rule.appLabel = name;
+        }
+        rule.activeWeekdaysMask = 0;
+        for (int day = 0; day < weekdayChecks.length; day++) {
+            if (weekdayChecks[day].isChecked()) {
+                rule.setActiveOnDay(day + 1, true);
+            }
+        }
+        if (rule.activeWeekdaysMask == 0) {
+            Toast.makeText(this, "至少选择一个生效星期", Toast.LENGTH_LONG).show();
+            return;
+        }
         rule.mode = modeGroup.getCheckedRadioButtonId() == dailyRadioId
                 ? Rule.MODE_DAILY_LIMIT : Rule.MODE_TIME_WINDOWS;
         rule.dailyLimitMinutes = Math.max(1, Math.min(1440,
@@ -398,6 +556,7 @@ public final class RuleEditorActivity extends Activity {
         }
         rule.temporaryUnlocksPerDay = unlockCount.getValue();
         rule.temporaryUnlockMinutes = unlockMinutes.getValue();
+        rule.remindOnInactiveDays = remindOnInactiveDays.isChecked();
         rule.extraLockMessage = extraMessage.getText().toString().trim();
         String intervalValue = reminderInterval.getText().toString().trim();
         rule.reminders.clear();
@@ -416,11 +575,54 @@ public final class RuleEditorActivity extends Activity {
                     reminderImageUri));
         }
 
+        if (rule.group && rule.members.size() == 1) {
+            Rule.AppMember member = rule.members.get(0);
+            new AlertDialog.Builder(this)
+                    .setTitle("转为单独规则？")
+                    .setMessage("应用组只剩“" + member.label
+                            + "”。确认保存后，将在明天 00:00 自动转为该应用的单独规则；取消不会修改当前组。")
+                    .setPositiveButton("确认保存", (dialog, which) -> persistRule())
+                    .setNegativeButton("取消", null)
+                    .show();
+            return;
+        }
+        persistRule();
+    }
+
+    private void persistRule() {
         long now = TrustedTime.now(this);
+        if (rule.group) {
+            DataStore.GroupSaveResult saved = store.saveGroupRule(rule, now);
+            if (saved == DataStore.GroupSaveResult.INVALID) {
+                Toast.makeText(this, "应用组保存失败，请检查成员设置",
+                        Toast.LENGTH_LONG).show();
+                return;
+            }
+            MonitorService.start(this);
+            String result;
+            if (saved == DataStore.GroupSaveResult.CREATED_IMMEDIATELY) {
+                for (Rule.AppMember member : rule.members) {
+                    store.seedTodayUsage(rule, member.packageName, member.label,
+                            UsageTracker.measureTodayForegroundMs(
+                                    this, member.packageName, now), now);
+                }
+                result = "应用组已立即生效";
+            } else if (saved == DataStore.GroupSaveResult.UPDATED_IMMEDIATELY) {
+                result = "设置已立即生效";
+            } else if (store.getActiveRule(rule.packageName, now) == null) {
+                result = "应用组将在明天 00:00 生效";
+            } else {
+                result = "组名、提醒和文字已立即生效；成员与限制修改将在明天生效";
+            }
+            Toast.makeText(this, result, Toast.LENGTH_LONG).show();
+            returnToDashboard();
+            return;
+        }
+
         boolean firstRule = store.saveRule(rule, now);
-        if (firstRule && UsageTracker.hasUsageAccess(this)) {
-            store.seedTodayUsage(rule, UsageTracker.measureTodayForegroundMs(
-                    this, rule.packageName, now), now);
+        if (firstRule) {
+            store.seedTodayUsage(rule,
+                    UsageTracker.measureTodayForegroundMs(this, rule.packageName, now), now);
         }
         MonitorService.start(this);
         String result;
@@ -439,8 +641,10 @@ public final class RuleEditorActivity extends Activity {
 
     private void confirmDelete() {
         new AlertDialog.Builder(this)
-                .setTitle("明天删除规则？")
-                .setMessage("今天仍会继续执行当前限制，明天 00:00 后停止限制。")
+                .setTitle(rule.group ? "明天删除应用组？" : "明天删除规则？")
+                .setMessage(rule.group
+                        ? "今天仍会继续执行当前组限制；明天 00:00 后删除组，成员应用将不再归属任何规则。"
+                        : "今天仍会继续执行当前限制，明天 00:00 后停止限制。")
                 .setPositiveButton("确认", (dialog, which) -> {
                     store.scheduleDelete(rule.packageName, TrustedTime.now(this));
                     Toast.makeText(this, "已安排明天删除", Toast.LENGTH_LONG).show();

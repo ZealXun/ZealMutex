@@ -23,14 +23,16 @@ public final class ReportsActivity extends Activity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        ThemeManager.applyBeforeCreate(this);
         super.onCreate(savedInstanceState);
+        ThemeManager.applySystemBars(this);
         build();
     }
 
     private void build() {
         ScrollView scroll = new ScrollView(this);
         content = Ui.column(this, 20);
-        content.setBackgroundColor(Ui.BLACK);
+        content.setBackgroundColor(Ui.background(this));
         scroll.addView(content);
         Ui.applyStatusBarInset(scroll);
         setContentView(scroll);
@@ -63,10 +65,7 @@ public final class ReportsActivity extends Activity {
                 if (stats == null) {
                     continue;
                 }
-                String line = stats.optString("label", packageName)
-                        + "\n已使用 " + RuleEngine.formatDuration(stats.optLong("usedMs", 0L))
-                        + " · 临时解锁 " + stats.optInt("temporaryUnlockCount", 0) + " 次";
-                card.addView(Ui.text(this, line, 14f, Ui.WHITE), Ui.matchWrap(this, 10));
+                addUsageStats(card, packageName, stats, false);
             }
             content.addView(card);
         }
@@ -102,15 +101,11 @@ public final class ReportsActivity extends Activity {
                     if (stats == null) {
                         continue;
                     }
-                    String line = stats.optString("label", packageName)
-                            + "\n总计 " + RuleEngine.formatDuration(stats.optLong("usedMs", 0L))
-                            + " · 超额 " + RuleEngine.formatDuration(stats.optLong("overMs", 0L))
-                            + " · 临时解锁 " + stats.optInt("temporaryUnlockCount", 0) + " 次";
-                    card.addView(Ui.text(this, line, 14f, Ui.WHITE), Ui.matchWrap(this, 12));
+                    addUsageStats(card, packageName, stats, true);
                 }
             }
             Button delete = Ui.secondaryButton(this, "删除这份周报");
-            delete.setTextColor(Ui.DANGER);
+            delete.setTextColor(Ui.color(this, Ui.DANGER));
             delete.setOnClickListener(view -> confirmDelete(reportId));
             card.addView(delete, Ui.matchWrap(this, 14));
             content.addView(card);
@@ -127,5 +122,55 @@ public final class ReportsActivity extends Activity {
                 })
                 .setNegativeButton("取消", null)
                 .show();
+    }
+
+    private void addUsageStats(LinearLayout card, String ruleKey,
+                               JSONObject stats, boolean weekly) {
+        String line = stats.optString("label", ruleKey)
+                + (stats.optBoolean("group", false) ? " · 应用组" : "")
+                + (weekly ? "\n总计 " : "\n已使用 ")
+                + RuleEngine.formatDuration(stats.optLong("usedMs", 0L));
+        if (weekly) {
+            line += " · 超额 " + RuleEngine.formatDuration(stats.optLong("overMs", 0L));
+        }
+        line += " · 临时解锁 " + stats.optInt("temporaryUnlockCount", 0) + " 次";
+        card.addView(Ui.text(this, line, 14f, Ui.WHITE), Ui.matchWrap(this, 12));
+
+        JSONObject members = stats.optJSONObject("members");
+        if (!stats.optBoolean("group", false) || members == null) {
+            return;
+        }
+        JSONArray order = stats.optJSONArray("memberOrder");
+        if (order != null) {
+            for (int i = 0; i < order.length(); i++) {
+                addMemberLine(card, members, order.optString(i));
+            }
+        }
+        Iterator<String> remaining = members.keys();
+        while (remaining.hasNext()) {
+            String packageName = remaining.next();
+            boolean alreadyShown = false;
+            if (order != null) {
+                for (int i = 0; i < order.length(); i++) {
+                    if (packageName.equals(order.optString(i))) {
+                        alreadyShown = true;
+                        break;
+                    }
+                }
+            }
+            if (!alreadyShown) {
+                addMemberLine(card, members, packageName);
+            }
+        }
+    }
+
+    private void addMemberLine(LinearLayout card, JSONObject members, String packageName) {
+        JSONObject member = members.optJSONObject(packageName);
+        if (member == null) {
+            return;
+        }
+        String line = "  · " + member.optString("label", packageName)
+                + "  " + RuleEngine.formatDuration(member.optLong("usedMs", 0L));
+        card.addView(Ui.text(this, line, 13f, Ui.MUTED), Ui.matchWrap(this, 5));
     }
 }

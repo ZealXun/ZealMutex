@@ -2,6 +2,7 @@ package com.zealmutex.app.ui;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.app.NotificationManager;
 import android.content.Intent;
 import android.content.SharedPreferences;
@@ -17,12 +18,14 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
+import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import com.zealmutex.app.R;
 import com.zealmutex.app.data.DataStore;
 import com.zealmutex.app.data.Rule;
 import com.zealmutex.app.engine.BackgroundSettings;
@@ -67,7 +70,9 @@ public final class MainActivity extends Activity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        ThemeManager.applyBeforeCreate(this);
         super.onCreate(savedInstanceState);
+        ThemeManager.applySystemBars(this);
         selectedTab = getIntent().getIntExtra(EXTRA_TAB, TAB_HOME);
         buildShell();
     }
@@ -105,7 +110,7 @@ public final class MainActivity extends Activity {
     private void buildShell() {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(Ui.BLACK);
+        root.setBackgroundColor(Ui.background(this));
 
         body = new LinearLayout(this);
         body.setOrientation(LinearLayout.VERTICAL);
@@ -114,9 +119,9 @@ public final class MainActivity extends Activity {
 
         bottomNavigation = new LinearLayout(this);
         bottomNavigation.setOrientation(LinearLayout.HORIZONTAL);
-        bottomNavigation.setPadding(Ui.dp(this, 12), Ui.dp(this, 8),
-                Ui.dp(this, 12), Ui.dp(this, 10));
-        bottomNavigation.setBackgroundColor(Ui.SURFACE);
+        bottomNavigation.setPadding(0, Ui.dp(this, 6), 0, Ui.dp(this, 8));
+        bottomNavigation.setBackgroundColor(Ui.surface(this));
+        Ui.applyNavigationBarInset(bottomNavigation);
         root.addView(bottomNavigation, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         Ui.applyStatusBarInset(root);
@@ -136,11 +141,11 @@ public final class MainActivity extends Activity {
 
     private View buildHome() {
         long now = TrustedTime.now(this);
-        List<Rule> rules = DataStore.get(this).getActiveRules(now);
+        List<Rule> rules = DataStore.get(this).getRulesForDisplay(now);
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
         LinearLayout content = Ui.column(this, 20);
-        content.setBackgroundColor(Ui.BLACK);
+        content.setBackgroundColor(Ui.background(this));
         scroll.addView(content);
 
         LinearLayout topBar = new LinearLayout(this);
@@ -198,6 +203,8 @@ public final class MainActivity extends Activity {
 
     private View buildRuleCard(Rule rule, long now) {
         DataStore store = DataStore.get(this);
+        boolean pendingActivation = store.getActiveRule(rule.packageName, now) == null;
+        boolean restrictionActive = RuleEngine.isRestrictionActive(rule, now);
         RuleEngine.Decision decision = RuleEngine.evaluate(this, rule, now);
         LinearLayout card = Ui.card(this);
         card.setClickable(true);
@@ -207,38 +214,52 @@ public final class MainActivity extends Activity {
         LinearLayout header = new LinearLayout(this);
         header.setOrientation(LinearLayout.HORIZONTAL);
         header.setGravity(Gravity.CENTER_VERTICAL);
-        try {
-            ImageView icon = new ImageView(this);
-            icon.setImageDrawable(getPackageManager().getApplicationIcon(rule.packageName));
-            header.addView(icon, new LinearLayout.LayoutParams(
-                    Ui.dp(this, 44), Ui.dp(this, 44)));
-        } catch (PackageManager.NameNotFoundException ignored) {
-        }
+        header.addView(buildRuleIcons(rule));
         LinearLayout labels = Ui.column(this, 0);
         labels.setPadding(Ui.dp(this, 12), 0, 0, 0);
         labels.addView(Ui.title(this, rule.appLabel, 19f));
         labels.addView(Ui.text(this,
-                rule.mode == Rule.MODE_DAILY_LIMIT ? "每日使用时长" : "允许使用时段",
+                (rule.group ? "应用组 · " + rule.members.size() + " 个应用 · " : "")
+                        + (rule.mode == Rule.MODE_DAILY_LIMIT
+                        ? "每日使用时长" : "允许使用时段"),
                 12f, Ui.MUTED), Ui.matchWrap(this, 3));
+        labels.addView(Ui.text(this, activeWeekdays(rule), 12f, Ui.MUTED),
+                Ui.matchWrap(this, 2));
         header.addView(labels, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        Button pin = Ui.secondaryButton(this, rule.pinned ? "取消置顶" : "置顶");
+        pin.setTextSize(12f);
+        pin.setContentDescription(rule.pinned ? "取消置顶" : "置顶规则");
+        pin.setOnClickListener(view -> {
+            store.setPinned(rule.packageName, !rule.pinned, TrustedTime.now(this));
+            render();
+        });
+        header.addView(pin, new LinearLayout.LayoutParams(
+                Ui.dp(this, 78), Ui.dp(this, 40)));
         card.addView(header);
 
-        card.addView(buildStatus(decision), Ui.matchWrap(this, 14));
-        if (rule.mode == Rule.MODE_DAILY_LIMIT) {
+        card.addView(buildStatus(decision, pendingActivation, restrictionActive),
+                Ui.matchWrap(this, 14));
+        if (!pendingActivation && restrictionActive && rule.mode == Rule.MODE_DAILY_LIMIT) {
             addDailyProgress(card, rule, decision.usedMs);
+        } else if (!pendingActivation && !restrictionActive) {
+            card.addView(Ui.text(this,
+                    "今日已使用 " + RuleEngine.formatDuration(decision.usedMs),
+                    13f, Ui.MUTED), Ui.matchWrap(this, 10));
         }
 
-        int remainingUnlocks = Math.max(0,
-                rule.temporaryUnlocksPerDay - decision.usedTemporaryUnlocks);
-        card.addView(Ui.text(this,
-                "今日还可临时解锁 " + remainingUnlocks + " 次",
-                13f, Ui.MUTED), Ui.matchWrap(this, 12));
+        if (!pendingActivation && restrictionActive) {
+            int remainingUnlocks = Math.max(0,
+                    rule.temporaryUnlocksPerDay - decision.usedTemporaryUnlocks);
+            card.addView(Ui.text(this,
+                    "今日还可临时解锁 " + remainingUnlocks + " 次",
+                    13f, Ui.MUTED), Ui.matchWrap(this, 12));
+        }
 
         String pending = store.pendingDescription(rule.packageName, now);
         if (!pending.isEmpty()) {
             String value = store.hasScheduledDelete(rule.packageName, now)
-                    ? "明日删除" : "明日生效 · " + pending;
+                    ? "明日删除" : pending;
             TextView pendingLabel = Ui.text(this, value, 12f, Ui.WHITE);
             pendingLabel.setPadding(Ui.dp(this, 10), Ui.dp(this, 7),
                     Ui.dp(this, 10), Ui.dp(this, 7));
@@ -249,11 +270,20 @@ public final class MainActivity extends Activity {
         return card;
     }
 
-    private View buildStatus(RuleEngine.Decision decision) {
+    private View buildStatus(RuleEngine.Decision decision, boolean pendingActivation,
+                             boolean restrictionActive) {
         String value;
         int fill;
         int color;
-        if (decision.temporaryUnlockRemainingMs > 0L) {
+        if (pendingActivation) {
+            value = "规则尚未生效";
+            fill = Ui.SURFACE_HIGH;
+            color = Ui.MUTED;
+        } else if (!restrictionActive) {
+            value = "今日不限制";
+            fill = Ui.SURFACE_HIGH;
+            color = Ui.BLUE;
+        } else if (decision.temporaryUnlockRemainingMs > 0L) {
             value = "临时解锁中 · 剩余 "
                     + RuleEngine.formatRemainingDuration(decision.temporaryUnlockRemainingMs);
             fill = Ui.BLUE_SURFACE;
@@ -276,6 +306,21 @@ public final class MainActivity extends Activity {
         return status;
     }
 
+    private static String activeWeekdays(Rule rule) {
+        String[] names = {"周一", "周二", "周三", "周四", "周五", "周六", "周日"};
+        StringBuilder value = new StringBuilder("生效：");
+        for (int day = 1; day <= 7; day++) {
+            if (!rule.isActiveOnDay(day)) {
+                continue;
+            }
+            if (value.length() > 3) {
+                value.append('、');
+            }
+            value.append(names[day - 1]);
+        }
+        return value.toString();
+    }
+
     private void addDailyProgress(LinearLayout card, Rule rule, long usedMs) {
         long limitMs = rule.dailyLimitMinutes * 60_000L;
         long remainingMs = Math.max(0L, limitMs - usedMs);
@@ -290,7 +335,7 @@ public final class MainActivity extends Activity {
                 15f, Ui.WHITE), new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         TextView percent = Ui.title(this, "剩余 " + remainingPercent + "%", 16f);
-        percent.setTextColor(Ui.BLUE);
+        percent.setTextColor(Ui.accent(this));
         row.addView(percent);
         card.addView(row, Ui.matchWrap(this, 16));
 
@@ -324,14 +369,18 @@ public final class MainActivity extends Activity {
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
         LinearLayout content = Ui.column(this, 20);
-        content.setBackgroundColor(Ui.BLACK);
+        content.setBackgroundColor(Ui.background(this));
         scroll.addView(content);
 
         content.addView(Ui.text(this, "ZEALMUTEX", 12f, Ui.MUTED));
         content.addView(Ui.title(this, "设置", 32f), Ui.matchWrap(this, 8));
-        content.addView(Ui.text(this, "权限、后台运行、报告和应用更新", 14f, Ui.MUTED),
+        content.addView(Ui.text(this, "主题、权限、后台运行、报告和应用更新",
+                        14f, Ui.MUTED),
                 Ui.matchWrap(this, 6));
 
+        content.addView(buildNavigationCard(
+                "主题", ThemeManager.selectedLabel(this), false,
+                view -> showThemeChooser()), Ui.matchWrap(this, 16));
         addPermissionCard(content);
         addTimeStatusCard(content);
         content.addView(buildNavigationCard(
@@ -487,32 +536,71 @@ public final class MainActivity extends Activity {
     private void renderBottomNavigation() {
         bottomNavigation.removeAllViews();
         boolean update = UpdateManager.hasUpdate(this);
-        Button home = navigationButton("主页", selectedTab == TAB_HOME);
+        View home = navigationItem(
+                R.drawable.ic_home, "主页", selectedTab == TAB_HOME, false);
         home.setOnClickListener(view -> selectTab(TAB_HOME));
         bottomNavigation.addView(home, navigationParams());
 
-        Button settings = navigationButton(update ? "设置  ●" : "设置",
-                selectedTab == TAB_SETTINGS);
-        if (update) {
-            settings.setTextColor(Ui.DANGER);
-        }
+        View settings = navigationItem(
+                R.drawable.ic_settings, "设置", selectedTab == TAB_SETTINGS, update);
         settings.setOnClickListener(view -> selectTab(TAB_SETTINGS));
         bottomNavigation.addView(settings, navigationParams());
     }
 
-    private Button navigationButton(String text, boolean selected) {
-        Button button = selected ? Ui.primaryButton(this, text)
-                : Ui.secondaryButton(this, text);
-        button.setMinHeight(Ui.dp(this, 46));
-        return button;
+    private View navigationItem(int iconResource, String label,
+                                boolean selected, boolean showDot) {
+        LinearLayout item = Ui.column(this, 0);
+        item.setGravity(Gravity.CENTER);
+        item.setClickable(true);
+        item.setFocusable(true);
+        item.setContentDescription(label + (selected ? "，当前页面" : ""));
+
+        FrameLayout iconHolder = new FrameLayout(this);
+        ImageView icon = new ImageView(this);
+        icon.setImageResource(iconResource);
+        int color = selected ? Ui.primaryText(this) : Ui.mutedText(this);
+        icon.setColorFilter(color);
+        FrameLayout.LayoutParams iconParams = new FrameLayout.LayoutParams(
+                Ui.dp(this, 25), Ui.dp(this, 25), Gravity.CENTER);
+        iconHolder.addView(icon, iconParams);
+        if (showDot) {
+            TextView dot = Ui.text(this, "●", 11f, Ui.DANGER);
+            dot.setContentDescription("有新版本");
+            FrameLayout.LayoutParams dotParams = new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    Gravity.TOP | Gravity.END);
+            iconHolder.addView(dot, dotParams);
+        }
+        item.addView(iconHolder, new LinearLayout.LayoutParams(
+                Ui.dp(this, 38), Ui.dp(this, 29)));
+        item.addView(Ui.text(this, label, 11f,
+                selected ? Ui.WHITE : Ui.MUTED), Ui.matchWrap(this, 1));
+        return item;
     }
 
     private LinearLayout.LayoutParams navigationParams() {
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                0, Ui.dp(this, 48), 1f);
-        params.setMarginStart(Ui.dp(this, 4));
-        params.setMarginEnd(Ui.dp(this, 4));
+                0, Ui.dp(this, 56), 1f);
         return params;
+    }
+
+    private void showThemeChooser() {
+        int current = ThemeManager.selected(this);
+        new AlertDialog.Builder(this)
+                .setTitle("选择主题")
+                .setSingleChoiceItems(ThemeManager.labels(), current, (dialog, which) -> {
+                    if (which == current) {
+                        dialog.dismiss();
+                        return;
+                    }
+                    ThemeManager.select(this, which);
+                    getIntent().putExtra(EXTRA_TAB, selectedTab);
+                    dialog.dismiss();
+                    recreate();
+                })
+                .setNegativeButton("取消", null)
+                .show();
     }
 
     private void selectTab(int tab) {
@@ -533,7 +621,49 @@ public final class MainActivity extends Activity {
                     Toast.LENGTH_LONG).show();
             return;
         }
-        startActivity(new Intent(this, AppPickerActivity.class));
+        new AlertDialog.Builder(this)
+                .setTitle("添加限制")
+                .setItems(new String[]{"单个应用", "应用组"}, (dialog, which) -> {
+                    if (which == 0) {
+                        startActivity(new Intent(this, AppPickerActivity.class));
+                    } else {
+                        startActivity(new Intent(this, RuleEditorActivity.class)
+                                .putExtra(RuleEditorActivity.EXTRA_CREATE_GROUP, true));
+                    }
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private View buildRuleIcons(Rule rule) {
+        LinearLayout icons = new LinearLayout(this);
+        icons.setOrientation(LinearLayout.HORIZONTAL);
+        int shown = rule.group ? Math.min(2, rule.members.size()) : 1;
+        for (int i = 0; i < shown; i++) {
+            String packageName = rule.group
+                    ? rule.members.get(i).packageName : rule.packageName;
+            try {
+                ImageView icon = new ImageView(this);
+                icon.setImageDrawable(getPackageManager().getApplicationIcon(packageName));
+                LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                        Ui.dp(this, 38), Ui.dp(this, 38));
+                if (i > 0) {
+                    params.setMarginStart(Ui.dp(this, 4));
+                }
+                icons.addView(icon, params);
+            } catch (PackageManager.NameNotFoundException ignored) {
+            }
+        }
+        if (rule.group && rule.members.size() > 2) {
+            TextView more = Ui.text(this, "+" + (rule.members.size() - 2), 12f, Ui.MUTED);
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT);
+            params.gravity = Gravity.CENTER_VERTICAL;
+            params.setMarginStart(Ui.dp(this, 5));
+            icons.addView(more, params);
+        }
+        return icons;
     }
 
     private void openRule(Rule rule) {
