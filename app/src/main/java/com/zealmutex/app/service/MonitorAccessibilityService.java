@@ -76,8 +76,17 @@ public final class MonitorAccessibilityService extends AccessibilityService {
         MonitorService.start(this);
         long now = TrustedTime.now(this);
         for (Rule rule : DataStore.get(this).getActiveRules(now)) {
-            DataStore.get(this).seedTodayUsage(rule,
-                    UsageTracker.measureTodayForegroundMs(this, rule.packageName, now), now);
+            if (rule.group) {
+                for (Rule.AppMember member : rule.members) {
+                    DataStore.get(this).seedTodayUsage(rule, member.packageName, member.label,
+                            UsageTracker.measureTodayForegroundMs(
+                                    this, member.packageName, now), now);
+                }
+            } else {
+                DataStore.get(this).seedTodayUsage(rule,
+                        UsageTracker.measureTodayForegroundMs(
+                                this, rule.packageName, now), now);
+            }
         }
         lastTickElapsed = SystemClock.uptimeMillis();
         handler.post(ticker);
@@ -119,7 +128,8 @@ public final class MonitorAccessibilityService extends AccessibilityService {
             for (String packageName : previouslyVisible) {
                 Rule rule = previousRules.get(packageName);
                 if (rule != null && !Safety.isAlwaysAllowed(this, packageName)) {
-                    DataStore.get(this).addUsageInterval(rule, now - delta, now);
+                    DataStore.get(this).addUsageInterval(rule, packageName,
+                            rule.memberLabel(packageName), now - delta, now);
                 }
             }
         }
@@ -127,7 +137,13 @@ public final class MonitorAccessibilityService extends AccessibilityService {
         List<Rule> rules = DataStore.get(this).getActiveRules(now);
         Map<String, Rule> byPackage = new HashMap<>();
         for (Rule rule : rules) {
-            byPackage.put(rule.packageName, rule);
+            if (rule.group) {
+                for (Rule.AppMember member : rule.members) {
+                    byPackage.put(member.packageName, rule);
+                }
+            } else {
+                byPackage.put(rule.packageName, rule);
+            }
         }
         previousRules.clear();
         previousRules.putAll(byPackage);
@@ -150,7 +166,8 @@ public final class MonitorAccessibilityService extends AccessibilityService {
         RuleEngine.Decision blocked = null;
         if (previouslyVisible.contains(lastEventPackage)) {
             Rule current = byPackage.get(lastEventPackage);
-            blocked = current == null ? null : RuleEngine.evaluate(this, current, now);
+            blocked = current == null ? null
+                    : RuleEngine.evaluate(this, current, lastEventPackage, now);
             if (blocked != null && !blocked.blocked) {
                 blocked = null;
             }
@@ -159,7 +176,7 @@ public final class MonitorAccessibilityService extends AccessibilityService {
         for (String packageName : previouslyVisible) {
             Rule rule = byPackage.get(packageName);
             for (RuleEngine.ReminderAlert alert
-                    : RuleEngine.collectDueReminders(this, rule, now)) {
+                    : RuleEngine.collectDueReminders(this, rule, packageName, now)) {
                 if (alert.displayMode == Rule.Reminder.DISPLAY_FULL_PAGE) {
                     showFullPage(alert);
                 } else {
@@ -172,7 +189,8 @@ public final class MonitorAccessibilityService extends AccessibilityService {
                 return;
             }
             if (blocked == null) {
-                RuleEngine.Decision decision = RuleEngine.evaluate(this, rule, now);
+                RuleEngine.Decision decision = RuleEngine.evaluate(
+                        this, rule, packageName, now);
                 if (decision.blocked) {
                     blocked = decision;
                 }
@@ -243,7 +261,7 @@ public final class MonitorAccessibilityService extends AccessibilityService {
                 return;
             }
         }
-        lockTitle.setText(decision.rule.appLabel + " 已锁定");
+        lockTitle.setText(decision.displayTitle + " 已锁定");
         lockReason.setText(decision.reason);
         long limitMs = decision.rule.dailyLimitMinutes * 60_000L;
         String usage = "今日已使用 " + RuleEngine.formatDuration(decision.usedMs);

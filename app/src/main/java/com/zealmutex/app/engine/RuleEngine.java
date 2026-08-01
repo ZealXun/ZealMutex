@@ -22,26 +22,32 @@ public final class RuleEngine {
     }
 
     public static Decision evaluate(Context context, Rule rule, long nowMillis) {
+        return evaluate(context, rule, rule.packageName, nowMillis);
+    }
+
+    public static Decision evaluate(
+            Context context, Rule rule, String installedPackage, long nowMillis) {
         DataStore store = DataStore.get(context);
-        long usedMs = store.getTodayUsageMs(rule.packageName, nowMillis);
+        long usedMs = store.getTodayUsageMs(rule, nowMillis);
         int usedUnlocks = store.getTodayTemporaryUnlockCount(rule.packageName, nowMillis);
 
         if (!isRestrictionActive(rule, nowMillis)) {
-            return Decision.allowed(rule, usedMs, usedUnlocks, 0L);
+            return Decision.allowed(rule, installedPackage, usedMs, usedUnlocks, 0L);
         }
 
         long temporaryRemainingMs = store.getTemporaryUnlockRemainingMs(
                 rule.packageName, nowMillis);
         if (temporaryRemainingMs > 0L) {
-            return Decision.allowed(rule, usedMs, usedUnlocks, temporaryRemainingMs);
+            return Decision.allowed(rule, installedPackage, usedMs, usedUnlocks,
+                    temporaryRemainingMs);
         }
 
         if (rule.mode == Rule.MODE_DAILY_LIMIT) {
             long limitMs = rule.dailyLimitMinutes * 60_000L;
             if (usedMs < limitMs) {
-                return Decision.allowed(rule, usedMs, usedUnlocks, 0L);
+                return Decision.allowed(rule, installedPackage, usedMs, usedUnlocks, 0L);
             }
-            return Decision.blocked(rule, usedMs, usedUnlocks,
+            return Decision.blocked(rule, installedPackage, usedMs, usedUnlocks,
                     "今日使用额度已用完", "明天 00:00");
         }
 
@@ -51,10 +57,10 @@ public final class RuleEngine {
         for (Rule.TimeWindow window : rule.windows) {
             if (minute >= window.startMinute
                     && minute < window.endMinute) {
-                return Decision.allowed(rule, usedMs, usedUnlocks, 0L);
+                return Decision.allowed(rule, installedPackage, usedMs, usedUnlocks, 0L);
             }
         }
-        return Decision.blocked(rule, usedMs, usedUnlocks,
+        return Decision.blocked(rule, installedPackage, usedMs, usedUnlocks,
                 "当前不在允许使用时段", nextAllowed(rule, now));
     }
 
@@ -65,8 +71,13 @@ public final class RuleEngine {
     /** Returns newly due cumulative-usage reminders, once for each interval today. */
     public static List<ReminderAlert> collectDueReminders(
             Context context, Rule rule, long nowMillis) {
+        return collectDueReminders(context, rule, rule.packageName, nowMillis);
+    }
+
+    public static List<ReminderAlert> collectDueReminders(
+            Context context, Rule rule, String installedPackage, long nowMillis) {
         DataStore store = DataStore.get(context);
-        long usedMs = store.getTodayUsageMs(rule.packageName, nowMillis);
+        long usedMs = store.getTodayUsageMs(rule, nowMillis);
         long limitMs = rule.dailyLimitMinutes * 60_000L;
         int weekday = weekday(nowMillis);
         boolean restrictionActive = rule.isActiveOnDay(weekday);
@@ -105,7 +116,10 @@ public final class RuleEngine {
                     : "已使用 " + formatDuration(usedMs)
                             + " · 剩余 " + formatDuration(remainingMs);
             store.markReminderFired(rule.packageName, id, nowMillis);
-            result.add(new ReminderAlert(rule.packageName, rule.appLabel, message, detail,
+            String title = rule.group
+                    ? rule.appLabel + " · " + rule.memberLabel(installedPackage)
+                    : rule.appLabel;
+            result.add(new ReminderAlert(installedPackage, title, message, detail,
                     reminder.displayMode, reminder.imageUri));
         }
         return result;
@@ -199,16 +213,23 @@ public final class RuleEngine {
     public static final class Decision {
         public final boolean blocked;
         public final Rule rule;
+        public final String installedPackage;
+        public final String displayTitle;
         public final long usedMs;
         public final int usedTemporaryUnlocks;
         public final long temporaryUnlockRemainingMs;
         public final String reason;
         public final String nextAllowed;
 
-        private Decision(boolean blocked, Rule rule, long usedMs, int usedTemporaryUnlocks,
+        private Decision(boolean blocked, Rule rule, String installedPackage,
+                         long usedMs, int usedTemporaryUnlocks,
                          long temporaryUnlockRemainingMs, String reason, String nextAllowed) {
             this.blocked = blocked;
             this.rule = rule;
+            this.installedPackage = installedPackage;
+            this.displayTitle = rule.group
+                    ? rule.appLabel + " · " + rule.memberLabel(installedPackage)
+                    : rule.appLabel;
             this.usedMs = usedMs;
             this.usedTemporaryUnlocks = usedTemporaryUnlocks;
             this.temporaryUnlockRemainingMs = temporaryUnlockRemainingMs;
@@ -216,15 +237,17 @@ public final class RuleEngine {
             this.nextAllowed = nextAllowed;
         }
 
-        static Decision allowed(Rule rule, long usedMs, int usedTemporaryUnlocks,
+        static Decision allowed(Rule rule, String installedPackage,
+                                long usedMs, int usedTemporaryUnlocks,
                                 long temporaryUnlockRemainingMs) {
-            return new Decision(false, rule, usedMs, usedTemporaryUnlocks,
+            return new Decision(false, rule, installedPackage, usedMs, usedTemporaryUnlocks,
                     temporaryUnlockRemainingMs, "", "");
         }
 
-        static Decision blocked(Rule rule, long usedMs, int usedTemporaryUnlocks,
+        static Decision blocked(Rule rule, String installedPackage,
+                                long usedMs, int usedTemporaryUnlocks,
                                 String reason, String nextAllowed) {
-            return new Decision(true, rule, usedMs, usedTemporaryUnlocks,
+            return new Decision(true, rule, installedPackage, usedMs, usedTemporaryUnlocks,
                     0L, reason, nextAllowed);
         }
     }
