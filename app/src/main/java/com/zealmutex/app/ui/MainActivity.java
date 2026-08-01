@@ -119,7 +119,7 @@ public final class MainActivity extends Activity {
 
         bottomNavigation = new LinearLayout(this);
         bottomNavigation.setOrientation(LinearLayout.HORIZONTAL);
-        bottomNavigation.setPadding(0, Ui.dp(this, 6), 0, Ui.dp(this, 8));
+        bottomNavigation.setPadding(0, Ui.dp(this, 4), 0, Ui.dp(this, 4));
         bottomNavigation.setBackgroundColor(Ui.surface(this));
         Ui.applyNavigationBarInset(bottomNavigation);
         root.addView(bottomNavigation, new LinearLayout.LayoutParams(
@@ -583,7 +583,7 @@ public final class MainActivity extends Activity {
 
     private LinearLayout.LayoutParams navigationParams() {
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                0, Ui.dp(this, 56), 1f);
+                0, Ui.dp(this, 52), 1f);
         return params;
     }
 
