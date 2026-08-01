@@ -161,7 +161,7 @@ public final class MainActivity extends Activity {
             add.setContentDescription("添加应用");
             add.setOnClickListener(view -> beginAddApplication());
             topBar.addView(add, new LinearLayout.LayoutParams(
-                    Ui.dp(this, 52), Ui.dp(this, 42)));
+                    Ui.dp(this, 44), Ui.dp(this, 42)));
         }
         content.addView(topBar);
         content.addView(Ui.title(this, "主页", 32f), Ui.matchWrap(this, 8));
@@ -574,8 +574,10 @@ public final class MainActivity extends Activity {
         }
         item.addView(iconHolder, new LinearLayout.LayoutParams(
                 Ui.dp(this, 38), Ui.dp(this, 29)));
-        item.addView(Ui.text(this, label, 11f,
-                selected ? Ui.WHITE : Ui.MUTED), Ui.matchWrap(this, 1));
+        TextView labelView = Ui.text(this, label, 11f,
+                selected ? Ui.WHITE : Ui.MUTED);
+        labelView.setGravity(Gravity.CENTER);
+        item.addView(labelView, Ui.matchWrap(this, 1));
         return item;
     }
 
