@@ -17,6 +17,7 @@ import java.util.List;
 public final class Rule {
     public static final int MODE_DAILY_LIMIT = 0;
     public static final int MODE_TIME_WINDOWS = 1;
+    public static final int ALL_WEEKDAYS_MASK = (1 << 7) - 1;
 
     public String packageName = "";
     public String appLabel = "";
@@ -24,6 +25,8 @@ public final class Rule {
     public int dailyLimitMinutes = 60;
     public int temporaryUnlocksPerDay = 1;
     public int temporaryUnlockMinutes = 5;
+    public int activeWeekdaysMask = ALL_WEEKDAYS_MASK;
+    public boolean remindOnInactiveDays = true;
     public String extraLockMessage = "";
     public final List<TimeWindow> windows = new ArrayList<>();
     public final List<Reminder> reminders = new ArrayList<>();
@@ -39,6 +42,7 @@ public final class Rule {
     /** Copies settings that are safe to apply without weakening today's limits. */
     public void applyImmediateSettingsFrom(Rule source) {
         extraLockMessage = source.extraLockMessage;
+        remindOnInactiveDays = source.remindOnInactiveDays;
         reminders.clear();
         for (Reminder reminder : source.reminders) {
             reminders.add(new Reminder(reminder.type, reminder.thresholdMinutes,
@@ -53,14 +57,14 @@ public final class Rule {
                 || dailyLimitMinutes != other.dailyLimitMinutes
                 || temporaryUnlocksPerDay != other.temporaryUnlocksPerDay
                 || temporaryUnlockMinutes != other.temporaryUnlockMinutes
+                || activeWeekdaysMask != other.activeWeekdaysMask
                 || windows.size() != other.windows.size()) {
             return false;
         }
         for (int i = 0; i < windows.size(); i++) {
             TimeWindow left = windows.get(i);
             TimeWindow right = other.windows.get(i);
-            if (left.dayOfWeek != right.dayOfWeek
-                    || left.startMinute != right.startMinute
+            if (left.startMinute != right.startMinute
                     || left.endMinute != right.endMinute) {
                 return false;
             }
@@ -76,6 +80,8 @@ public final class Rule {
         object.put("dailyLimitMinutes", dailyLimitMinutes);
         object.put("temporaryUnlocksPerDay", temporaryUnlocksPerDay);
         object.put("temporaryUnlockMinutes", temporaryUnlockMinutes);
+        object.put("activeWeekdaysMask", activeWeekdaysMask);
+        object.put("remindOnInactiveDays", remindOnInactiveDays);
         object.put("extraLockMessage", extraLockMessage);
 
         JSONArray windowArray = new JSONArray();
@@ -100,13 +106,18 @@ public final class Rule {
         rule.dailyLimitMinutes = clamp(object.optInt("dailyLimitMinutes", 60), 1, 1440);
         rule.temporaryUnlocksPerDay = clamp(object.optInt("temporaryUnlocksPerDay", 1), 0, 5);
         rule.temporaryUnlockMinutes = clamp(object.optInt("temporaryUnlockMinutes", 5), 1, 10);
+        int weekdays = object.optInt("activeWeekdaysMask", ALL_WEEKDAYS_MASK)
+                & ALL_WEEKDAYS_MASK;
+        rule.activeWeekdaysMask = weekdays == 0 ? ALL_WEEKDAYS_MASK : weekdays;
+        rule.remindOnInactiveDays = object.optBoolean("remindOnInactiveDays", true);
         rule.extraLockMessage = object.optString("extraLockMessage", "");
 
         JSONArray windowArray = object.optJSONArray("windows");
         if (windowArray != null) {
             for (int i = 0; i < windowArray.length(); i++) {
                 TimeWindow window = TimeWindow.fromJson(windowArray.getJSONObject(i));
-                if (window.startMinute < window.endMinute) {
+                if (window.startMinute < window.endMinute
+                        && !containsWindow(rule.windows, window)) {
                     rule.windows.add(window);
                 }
             }
@@ -119,35 +130,58 @@ public final class Rule {
         return rule;
     }
 
+    public boolean isActiveOnDay(int isoDayOfWeek) {
+        return isoDayOfWeek >= 1 && isoDayOfWeek <= 7
+                && (activeWeekdaysMask & (1 << (isoDayOfWeek - 1))) != 0;
+    }
+
+    public void setActiveOnDay(int isoDayOfWeek, boolean active) {
+        if (isoDayOfWeek < 1 || isoDayOfWeek > 7) {
+            return;
+        }
+        int flag = 1 << (isoDayOfWeek - 1);
+        activeWeekdaysMask = active ? activeWeekdaysMask | flag : activeWeekdaysMask & ~flag;
+    }
+
+    public boolean shouldRemindOnDay(int isoDayOfWeek) {
+        return isActiveOnDay(isoDayOfWeek) || remindOnInactiveDays;
+    }
+
+    private static boolean containsWindow(List<TimeWindow> windows, TimeWindow candidate) {
+        for (TimeWindow existing : windows) {
+            if (existing.startMinute == candidate.startMinute
+                    && existing.endMinute == candidate.endMinute) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static int clamp(int value, int min, int max) {
         return Math.max(min, Math.min(max, value));
     }
 
-    /** A non-cross-midnight interval on one ISO weekday (Monday=1). */
+    /** A non-cross-midnight interval shared by every active weekday. */
     public static final class TimeWindow {
-        public int dayOfWeek = 1;
         public int startMinute;
         public int endMinute;
 
         public TimeWindow() {
         }
 
-        public TimeWindow(int dayOfWeek, int startMinute, int endMinute) {
-            this.dayOfWeek = dayOfWeek;
+        public TimeWindow(int startMinute, int endMinute) {
             this.startMinute = startMinute;
             this.endMinute = endMinute;
         }
 
         JSONObject toJson() throws JSONException {
             return new JSONObject()
-                    .put("day", dayOfWeek)
                     .put("start", startMinute)
                     .put("end", endMinute);
         }
 
         static TimeWindow fromJson(JSONObject object) {
             return new TimeWindow(
-                    clamp(object.optInt("day", 1), 1, 7),
                     clamp(object.optInt("start", 0), 0, 1439),
                     clamp(object.optInt("end", 1), 1, 1440));
         }

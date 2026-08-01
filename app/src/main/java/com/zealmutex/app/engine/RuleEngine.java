@@ -26,6 +26,10 @@ public final class RuleEngine {
         long usedMs = store.getTodayUsageMs(rule.packageName, nowMillis);
         int usedUnlocks = store.getTodayTemporaryUnlockCount(rule.packageName, nowMillis);
 
+        if (!isRestrictionActive(rule, nowMillis)) {
+            return Decision.allowed(rule, usedMs, usedUnlocks, 0L);
+        }
+
         long temporaryRemainingMs = store.getTemporaryUnlockRemainingMs(
                 rule.packageName, nowMillis);
         if (temporaryRemainingMs > 0L) {
@@ -44,10 +48,8 @@ public final class RuleEngine {
         LocalDateTime now = Instant.ofEpochMilli(nowMillis)
                 .atZone(ZoneId.systemDefault()).toLocalDateTime();
         int minute = now.getHour() * 60 + now.getMinute();
-        int day = now.getDayOfWeek().getValue();
         for (Rule.TimeWindow window : rule.windows) {
-            if (window.dayOfWeek == day
-                    && minute >= window.startMinute
+            if (minute >= window.startMinute
                     && minute < window.endMinute) {
                 return Decision.allowed(rule, usedMs, usedUnlocks, 0L);
             }
@@ -66,6 +68,11 @@ public final class RuleEngine {
         DataStore store = DataStore.get(context);
         long usedMs = store.getTodayUsageMs(rule.packageName, nowMillis);
         long limitMs = rule.dailyLimitMinutes * 60_000L;
+        int weekday = weekday(nowMillis);
+        boolean restrictionActive = rule.isActiveOnDay(weekday);
+        if (!rule.shouldRemindOnDay(weekday)) {
+            return new ArrayList<>();
+        }
         List<ReminderAlert> result = new ArrayList<>();
         for (Rule.Reminder reminder : rule.reminders) {
             long intervalMs = reminder.thresholdMinutes * 60_000L;
@@ -73,15 +80,17 @@ public final class RuleEngine {
             if (intervalNumber <= 0L) {
                 continue;
             }
-            if (rule.mode == Rule.MODE_DAILY_LIMIT && usedMs >= limitMs) {
+            if (restrictionActive && rule.mode == Rule.MODE_DAILY_LIMIT && usedMs >= limitMs) {
                 continue;
             }
             String id = reminder.stableId() + ":" + intervalNumber;
             if (store.hasReminderFired(rule.packageName, id, nowMillis)) {
                 continue;
             }
-            long remainingMs;
-            if (rule.mode == Rule.MODE_DAILY_LIMIT) {
+            long remainingMs = -1L;
+            if (!restrictionActive) {
+                // There is no quota or window on an inactive weekday.
+            } else if (rule.mode == Rule.MODE_DAILY_LIMIT) {
                 remainingMs = Math.max(0L, limitMs - usedMs);
             } else {
                 remainingMs = currentWindowRemainingMs(rule, nowMillis);
@@ -91,8 +100,10 @@ public final class RuleEngine {
             }
             String message = reminder.customText.trim().isEmpty()
                     ? "请注意使用时间" : reminder.customText.trim();
-            String detail = "已使用 " + formatDuration(usedMs)
-                    + " · 剩余 " + formatDuration(remainingMs);
+            String detail = !restrictionActive
+                    ? "已使用 " + formatDuration(usedMs) + " · 今日不限制"
+                    : "已使用 " + formatDuration(usedMs)
+                            + " · 剩余 " + formatDuration(remainingMs);
             store.markReminderFired(rule.packageName, id, nowMillis);
             result.add(new ReminderAlert(rule.packageName, rule.appLabel, message, detail,
                     reminder.displayMode, reminder.imageUri));
@@ -103,10 +114,12 @@ public final class RuleEngine {
     public static long currentWindowRemainingMs(Rule rule, long nowMillis) {
         LocalDateTime now = Instant.ofEpochMilli(nowMillis)
                 .atZone(ZoneId.systemDefault()).toLocalDateTime();
+        if (!rule.isActiveOnDay(now.getDayOfWeek().getValue())) {
+            return -1L;
+        }
         int minute = now.getHour() * 60 + now.getMinute();
         for (Rule.TimeWindow window : rule.windows) {
-            if (window.dayOfWeek == now.getDayOfWeek().getValue()
-                    && minute >= window.startMinute
+            if (minute >= window.startMinute
                     && minute < window.endMinute) {
                 long endOfMinuteAdjustment = 60_000L - now.getSecond() * 1_000L
                         - now.getNano() / 1_000_000L;
@@ -139,15 +152,27 @@ public final class RuleEngine {
         return totalMinutes + "分钟";
     }
 
+    public static boolean isRestrictionActive(Rule rule, long nowMillis) {
+        return rule.isActiveOnDay(weekday(nowMillis));
+    }
+
+    private static int weekday(long nowMillis) {
+        return Instant.ofEpochMilli(nowMillis).atZone(ZoneId.systemDefault())
+                .getDayOfWeek().getValue();
+    }
+
     private static String nextAllowed(Rule rule, LocalDateTime now) {
         for (int dayOffset = 0; dayOffset <= 7; dayOffset++) {
             LocalDateTime day = now.plusDays(dayOffset).withHour(0).withMinute(0)
                     .withSecond(0).withNano(0);
             int weekday = day.getDayOfWeek().getValue();
+            if (!rule.isActiveOnDay(weekday)) {
+                continue;
+            }
             int nowMinute = dayOffset == 0 ? now.getHour() * 60 + now.getMinute() : -1;
             Rule.TimeWindow best = null;
             for (Rule.TimeWindow window : rule.windows) {
-                if (window.dayOfWeek == weekday && window.startMinute > nowMinute
+                if (window.startMinute > nowMinute
                         && (best == null || window.startMinute < best.startMinute)) {
                     best = window;
                 }

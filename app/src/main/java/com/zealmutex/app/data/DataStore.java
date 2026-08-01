@@ -96,6 +96,29 @@ public final class DataStore {
         return result;
     }
 
+    /** Returns active rules plus newly created rules waiting for tomorrow. */
+    public synchronized List<Rule> getRulesForDisplay(long nowMillis) {
+        rollover(nowMillis);
+        List<Rule> result = new ArrayList<>();
+        JSONObject active = object("activeRules");
+        JSONObject pending = object("pending");
+        JSONArray order = array("ruleOrder");
+        for (int i = 0; i < order.length(); i++) {
+            String packageName = order.optString(i);
+            Rule rule = parseRule(active.optJSONObject(packageName));
+            if (rule == null) {
+                JSONObject change = pending.optJSONObject(packageName);
+                if (change != null && !change.optBoolean("delete", false)) {
+                    rule = parseRule(change.optJSONObject("rule"));
+                }
+            }
+            if (rule != null) {
+                result.add(rule);
+            }
+        }
+        return result;
+    }
+
     public synchronized Rule getActiveRule(String packageName, long nowMillis) {
         rollover(nowMillis);
         return parseRule(object("activeRules").optJSONObject(packageName));
@@ -114,13 +137,16 @@ public final class DataStore {
         return parseRule(object("activeRules").optJSONObject(packageName));
     }
 
-    /** Saves immediate fields now and queues only limit-related changes for tomorrow. */
+    /** Saves immediate fields now and queues all new or limit-related rules for tomorrow. */
     public synchronized boolean saveRule(Rule rule, long nowMillis) {
         rollover(nowMillis);
         try {
             JSONObject active = object("activeRules");
             if (!active.has(rule.packageName)) {
-                active.put(rule.packageName, rule.toJson());
+                object("pending").put(rule.packageName, new JSONObject()
+                        .put("effectiveDate", date(nowMillis).plusDays(1).toString())
+                        .put("delete", false)
+                        .put("rule", rule.toJson()));
                 appendRuleOrder(rule.packageName);
                 persistNow();
                 return true;
@@ -192,7 +218,14 @@ public final class DataStore {
         if (pending == null) {
             return "";
         }
-        String action = pending.optBoolean("delete", false) ? "删除" : "限制修改";
+        String action;
+        if (pending.optBoolean("delete", false)) {
+            action = "删除";
+        } else if (object("activeRules").has(packageName)) {
+            action = "限制修改";
+        } else {
+            action = "新规则";
+        }
         return action + "将在 " + pending.optString("effectiveDate", "明天") + " 生效";
     }
 
